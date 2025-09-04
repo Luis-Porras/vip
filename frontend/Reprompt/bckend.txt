@@ -1,0 +1,3751 @@
+//backend/src/config/snowflake.ts
+import snowflake from 'snowflake-sdk';
+
+console.log('Snowflake config:', {
+  account: process.env.SNOWFLAKE_ACCOUNT,
+  username: process.env.SNOWFLAKE_USERNAME,
+  database: process.env.SNOWFLAKE_DATABASE
+});
+
+const connection = snowflake.createConnection({
+  account: process.env.SNOWFLAKE_ACCOUNT!,
+  username: process.env.SNOWFLAKE_USERNAME!,
+  password: process.env.SNOWFLAKE_PASSWORD!,
+  database: process.env.SNOWFLAKE_DATABASE || 'VIDEO_INTERVIEWS',
+  schema: process.env.SNOWFLAKE_SCHEMA || 'MAIN',
+  warehouse: process.env.SNOWFLAKE_WAREHOUSE || 'COMPUTE_WH',
+});
+
+// Connect to Snowflake
+export const connectToSnowflake = (): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    connection.connect((err, conn) => {
+      if (err) {
+        console.error('Unable to connect to Snowflake:', err.message);
+        reject(err);
+      } else {
+        console.log('✅ Successfully connected to Snowflake');
+        resolve();
+      }
+    });
+  });
+};
+
+// Execute query helper
+export const executeQuery = (sqlText: string, binds: any[] = []): Promise<any[]> => {
+  return new Promise((resolve, reject) => {
+    connection.execute({
+      sqlText,
+      binds,
+      complete: (err, stmt, rows) => {
+        if (err) {
+          console.error('Failed to execute statement:', err.message);
+          reject(err);
+        } else {
+          resolve(rows || []);
+        }
+      },
+    });
+  });
+};
+
+export default connection;
+
+// backend/src/middleware/auth.ts
+import { Request, Response, NextFunction } from 'express';
+import jwt from 'jsonwebtoken';
+
+export interface AuthRequest extends Request {
+  user?: {
+    id: string;
+    email: string;
+    role: string;
+  };
+}
+
+export const authMiddleware = (req: AuthRequest, res: Response, next: NextFunction): void => {
+  const token = req.header('Authorization')?.replace('Bearer ', '');
+
+  if (!token) {
+    res.status(401).json({ error: 'Access denied. No token provided.' });
+    return;
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any;
+    req.user = decoded;
+    next();
+  } catch (error) {
+    res.status(400).json({ error: 'Invalid token.' });
+    return;
+  }
+};
+
+// backend/src/middleware/errorHandler.ts
+import { Request, Response, NextFunction } from 'express';
+
+interface Error {
+  statusCode?: number;
+  message: string;
+  stack?: string;
+}
+
+export const errorHandler = (
+  err: Error,
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  const statusCode = err.statusCode || 500;
+  const message = err.message || 'Internal Server Error';
+
+  console.error(`Error ${statusCode}: ${message}`);
+  if (process.env.NODE_ENV === 'development') {
+    console.error(err.stack);
+  }
+
+  res.status(statusCode).json({
+    error: message,
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
+  });
+};
+
+//backend/src/models/Evaluation.ts
+import { executeQuery } from '../config/snowflake';
+import { v4 as uuidv4 } from 'uuid';
+
+export interface QuestionEvaluation {
+  id: string;
+  session_id: string;
+  question_id: string;
+  rating: number | null;
+  notes: string;
+  evaluated_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export class EvaluationModel {
+  static async saveEvaluation(evaluationData: {
+    session_id: string;
+    question_id: string;
+    rating: number | null;
+    notes: string;
+    evaluated_by: string;
+  }): Promise<QuestionEvaluation> {
+    // Check if evaluation already exists
+    const existing = await this.getEvaluation(evaluationData.session_id, evaluationData.question_id);
+    
+    if (existing) {
+      // Update existing evaluation
+      const query = `
+        UPDATE question_evaluations 
+        SET rating = ?, notes = ?, updated_at = CURRENT_TIMESTAMP()
+        WHERE session_id = ? AND question_id = ?
+      `;
+      
+      await executeQuery(query, [
+        evaluationData.rating,
+        evaluationData.notes,
+        evaluationData.session_id,
+        evaluationData.question_id
+      ]);
+      
+      return this.getEvaluation(evaluationData.session_id, evaluationData.question_id)!;
+    } else {
+      // Create new evaluation
+      const id = uuidv4();
+      const query = `
+        INSERT INTO question_evaluations (id, session_id, question_id, rating, notes, evaluated_by)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `;
+      
+      await executeQuery(query, [
+        id,
+        evaluationData.session_id,
+        evaluationData.question_id,
+        evaluationData.rating,
+        evaluationData.notes,
+        evaluationData.evaluated_by
+      ]);
+      
+      return this.getEvaluation(evaluationData.session_id, evaluationData.question_id)!;
+    }
+  }
+
+  static async getEvaluation(sessionId: string, questionId: string): Promise<QuestionEvaluation | null> {
+    const query = 'SELECT * FROM question_evaluations WHERE session_id = ? AND question_id = ?';
+    const rows = await executeQuery(query, [sessionId, questionId]);
+    
+    if (rows.length === 0) return null;
+    
+    const row = rows[0];
+    return {
+      id: row.ID,
+      session_id: row.SESSION_ID,
+      question_id: row.QUESTION_ID,
+      rating: row.RATING,
+      notes: row.NOTES,
+      evaluated_by: row.EVALUATED_BY,
+      created_at: row.CREATED_AT,
+      updated_at: row.UPDATED_AT
+    };
+  }
+
+  static async getSessionEvaluations(sessionId: string): Promise<QuestionEvaluation[]> {
+    const query = 'SELECT * FROM question_evaluations WHERE session_id = ? ORDER BY created_at';
+    const rows = await executeQuery(query, [sessionId]);
+    
+    return rows.map(row => ({
+      id: row.ID,
+      session_id: row.SESSION_ID,
+      question_id: row.QUESTION_ID,
+      rating: row.RATING,
+      notes: row.NOTES,
+      evaluated_by: row.EVALUATED_BY,
+      created_at: row.CREATED_AT,
+      updated_at: row.UPDATED_AT
+    }));
+  }
+
+  static async getAverageRating(sessionId: string): Promise<number | null> {
+    const query = `
+      SELECT AVG(rating) as avg_rating 
+      FROM question_evaluations 
+      WHERE session_id = ? AND rating IS NOT NULL
+    `;
+    const rows = await executeQuery(query, [sessionId]);
+    
+    if (rows.length === 0 || rows[0].AVG_RATING === null) return null;
+    return parseFloat(rows[0].AVG_RATING);
+  }
+}
+
+// backend/src/models/Interview.ts
+import { executeQuery } from '../config/snowflake';
+import { v4 as uuidv4 } from 'uuid';
+
+export interface InterviewTemplate {
+  id: string;
+  title: string;
+  description: string;
+  created_by: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InterviewQuestion {
+  id: string;
+  template_id: string;
+  question_text: string;
+  time_limit: number;
+  question_order: number;
+  created_at: string;
+}
+
+export interface InterviewSession {
+  id: string;
+  template_id: string;
+  candidate_email: string;
+  candidate_name: string;
+  status: string;
+  started_at?: string;
+  completed_at?: string;
+  expires_at: string;
+  created_at: string;
+}
+
+export class InterviewModel {
+  static async createTemplate(templateData: {
+    title: string;
+    description: string;
+    created_by: string;
+  }): Promise<InterviewTemplate> {
+    const id = uuidv4();
+    
+    const query = `
+      INSERT INTO interview_templates (id, title, description, created_by)
+      VALUES (?, ?, ?, ?)
+    `;
+    
+    await executeQuery(query, [
+      id,
+      templateData.title,
+      templateData.description,
+      templateData.created_by
+    ]);
+
+    return this.getTemplateById(id);
+  }
+
+  static async addQuestion(questionData: {
+    template_id: string;
+    question_text: string;
+    time_limit: number;
+    question_order: number;
+  }): Promise<InterviewQuestion> {
+    const id = uuidv4();
+    
+    const query = `
+      INSERT INTO interview_questions (id, template_id, question_text, time_limit, question_order)
+      VALUES (?, ?, ?, ?, ?)
+    `;
+    
+    await executeQuery(query, [
+      id,
+      questionData.template_id,
+      questionData.question_text,
+      questionData.time_limit,
+      questionData.question_order
+    ]);
+
+    const rows = await executeQuery('SELECT * FROM interview_questions WHERE id = ?', [id]);
+    const row = rows[0];
+    return {
+      id: row.ID,
+      template_id: row.TEMPLATE_ID,
+      question_text: row.QUESTION_TEXT,
+      time_limit: row.TIME_LIMIT,
+      question_order: row.QUESTION_ORDER,
+      created_at: row.CREATED_AT
+    };
+  }
+
+  static async getTemplateById(id: string): Promise<InterviewTemplate | null> {
+    const query = 'SELECT * FROM interview_templates WHERE id = ? AND is_active = true';
+    const rows = await executeQuery(query, [id]);
+    
+    if (rows.length === 0) return null;
+    
+    const row = rows[0];
+    return {
+      id: row.ID,
+      title: row.TITLE,
+      description: row.DESCRIPTION,
+      created_by: row.CREATED_BY,
+      is_active: row.IS_ACTIVE,
+      created_at: row.CREATED_AT,
+      updated_at: row.UPDATED_AT
+    };
+  }
+
+  static async getTemplatesByUser(userId: string): Promise<InterviewTemplate[]> {
+    const query = 'SELECT * FROM interview_templates WHERE created_by = ? AND is_active = true ORDER BY created_at DESC';
+    const rows = await executeQuery(query, [userId]);
+    
+    return rows.map(row => ({
+      id: row.ID,
+      title: row.TITLE,
+      description: row.DESCRIPTION,
+      created_by: row.CREATED_BY,
+      is_active: row.IS_ACTIVE,
+      created_at: row.CREATED_AT,
+      updated_at: row.UPDATED_AT
+    }));
+  }
+
+  static async getQuestionsByTemplate(templateId: string): Promise<InterviewQuestion[]> {
+    const query = 'SELECT * FROM interview_questions WHERE template_id = ? ORDER BY question_order';
+    const rows = await executeQuery(query, [templateId]);
+    
+    return rows.map(row => ({
+      id: row.ID,
+      template_id: row.TEMPLATE_ID,
+      question_text: row.QUESTION_TEXT,
+      time_limit: row.TIME_LIMIT,
+      question_order: row.QUESTION_ORDER,
+      created_at: row.CREATED_AT
+    }));
+  }
+
+  static async createSession(sessionData: {
+    template_id: string;
+    candidate_email: string;
+    candidate_name: string;
+  }): Promise<InterviewSession> {
+    const id = uuidv4();
+    const expiresAt = new Date();
+    expiresAt.setHours(expiresAt.getHours() + 24); // 24 hour expiry
+    
+    const query = `
+      INSERT INTO interview_sessions (id, template_id, candidate_email, candidate_name, expires_at)
+      VALUES (?, ?, ?, ?, ?)
+    `;
+    
+    await executeQuery(query, [
+      id,
+      sessionData.template_id,
+      sessionData.candidate_email,
+      sessionData.candidate_name,
+      expiresAt.toISOString()
+    ]);
+
+    const rows = await executeQuery('SELECT * FROM interview_sessions WHERE id = ?', [id]);
+    const row = rows[0];
+    return {
+      id: row.ID,
+      template_id: row.TEMPLATE_ID,
+      candidate_email: row.CANDIDATE_EMAIL,
+      candidate_name: row.CANDIDATE_NAME,
+      status: row.STATUS,
+      started_at: row.STARTED_AT,
+      completed_at: row.COMPLETED_AT,
+      expires_at: row.EXPIRES_AT,
+      created_at: row.CREATED_AT
+    };
+  }
+
+  static async getSessionById(id: string): Promise<InterviewSession | null> {
+    const query = 'SELECT * FROM interview_sessions WHERE id = ?';
+    const rows = await executeQuery(query, [id]);
+    
+    if (rows.length === 0) return null;
+    
+    const row = rows[0];
+    return {
+      id: row.ID,
+      template_id: row.TEMPLATE_ID,
+      candidate_email: row.CANDIDATE_EMAIL,
+      candidate_name: row.CANDIDATE_NAME,
+      status: row.STATUS,
+      started_at: row.STARTED_AT,
+      completed_at: row.COMPLETED_AT,
+      expires_at: row.EXPIRES_AT,
+      created_at: row.CREATED_AT
+    };
+  }
+
+static async updateSessionStatus(id: string, status: string): Promise<void> {
+  const query = 'UPDATE interview_sessions SET status = ? WHERE id = ?';
+  await executeQuery(query, [status, id]);
+}
+}
+
+// backend/src/models/Keyword.ts
+import { executeQuery } from '../config/snowflake';
+import { v4 as uuidv4 } from 'uuid';
+
+export interface TemplateKeyword {
+  id: string;
+  template_id: string;
+  keyword: string;
+  category: string;
+  weight: number;
+  created_at: string;
+  created_by: string;
+}
+
+export interface VideoTranscript {
+  id: string;
+  video_response_id: string;
+  session_id: string;
+  question_id: string;
+  transcript_text: string;
+  confidence_score: number;
+  word_count: number;
+  processing_status: string;
+  processed_at: string;
+  created_at: string;
+}
+
+export interface KeywordMatch {
+  id: string;
+  transcript_id: string;
+  keyword_id: string;
+  match_count: number;
+  match_positions: string;
+  confidence_score: number;
+  created_at: string;
+}
+
+export interface SessionKeywordScore {
+  id: string;
+  session_id: string;
+  template_id: string;
+  overall_score: number;
+  technical_score: number;
+  soft_skills_score: number;
+  experience_score: number;
+  total_keywords_found: number;
+  total_keywords_possible: number;
+  score_breakdown: string;
+  calculated_at: string;
+  updated_at: string;
+}
+
+export class KeywordModel {
+  // Create keywords for a template
+  static async createKeywords(templateId: string, keywords: Array<{
+    keyword: string;
+    category: string;
+    weight: number;
+  }>, createdBy: string): Promise<TemplateKeyword[]> {
+    const createdKeywords: TemplateKeyword[] = [];
+    
+    for (const keywordData of keywords) {
+      const id = uuidv4();
+      const query = `
+        INSERT INTO template_keywords (id, template_id, keyword, category, weight, created_by)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `;
+      
+      await executeQuery(query, [
+        id,
+        templateId,
+        keywordData.keyword.toLowerCase().trim(),
+        keywordData.category,
+        keywordData.weight,
+        createdBy
+      ]);
+      
+      const created = await this.getKeywordById(id);
+      if (created) createdKeywords.push(created);
+    }
+    
+    return createdKeywords;
+  }
+
+  // Get all keywords for a template
+  static async getKeywordsByTemplate(templateId: string): Promise<TemplateKeyword[]> {
+    const query = 'SELECT * FROM template_keywords WHERE template_id = ? ORDER BY category, keyword';
+    const rows = await executeQuery(query, [templateId]);
+    
+    return rows.map(row => ({
+      id: row.ID,
+      template_id: row.TEMPLATE_ID,
+      keyword: row.KEYWORD,
+      category: row.CATEGORY,
+      weight: row.WEIGHT,
+      created_at: row.CREATED_AT,
+      created_by: row.CREATED_BY
+    }));
+  }
+
+  // Get keyword by ID
+  static async getKeywordById(id: string): Promise<TemplateKeyword | null> {
+    const query = 'SELECT * FROM template_keywords WHERE id = ?';
+    const rows = await executeQuery(query, [id]);
+    
+    if (rows.length === 0) return null;
+    
+    const row = rows[0];
+    return {
+      id: row.ID,
+      template_id: row.TEMPLATE_ID,
+      keyword: row.KEYWORD,
+      category: row.CATEGORY,
+      weight: row.WEIGHT,
+      created_at: row.CREATED_AT,
+      created_by: row.CREATED_BY
+    };
+  }
+
+  // Update keywords for a template (replace all)
+  static async updateTemplateKeywords(templateId: string, keywords: Array<{
+    keyword: string;
+    category: string;
+    weight: number;
+  }>, updatedBy: string): Promise<TemplateKeyword[]> {
+    // Delete existing keywords
+    await executeQuery('DELETE FROM template_keywords WHERE template_id = ?', [templateId]);
+    
+    // Create new keywords
+    return this.createKeywords(templateId, keywords, updatedBy);
+  }
+
+  // Delete keyword
+  static async deleteKeyword(id: string): Promise<void> {
+    await executeQuery('DELETE FROM template_keywords WHERE id = ?', [id]);
+  }
+
+  // Save transcript
+  static async saveTranscript(transcriptData: {
+    video_response_id: string;
+    session_id: string;
+    question_id: string;
+    transcript_text: string;
+    confidence_score: number;
+    word_count: number;
+  }): Promise<VideoTranscript> {
+    const id = uuidv4();
+    const query = `
+      INSERT INTO video_transcripts 
+      (id, video_response_id, session_id, question_id, transcript_text, confidence_score, word_count, processing_status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'completed')
+    `;
+    
+    await executeQuery(query, [
+      id,
+      transcriptData.video_response_id,
+      transcriptData.session_id,
+      transcriptData.question_id,
+      transcriptData.transcript_text,
+      transcriptData.confidence_score,
+      transcriptData.word_count
+    ]);
+
+    const rows = await executeQuery('SELECT * FROM video_transcripts WHERE id = ?', [id]);
+    const row = rows[0];
+    
+    return {
+      id: row.ID,
+      video_response_id: row.VIDEO_RESPONSE_ID,
+      session_id: row.SESSION_ID,
+      question_id: row.QUESTION_ID,
+      transcript_text: row.TRANSCRIPT_TEXT,
+      confidence_score: row.CONFIDENCE_SCORE,
+      word_count: row.WORD_COUNT,
+      processing_status: row.PROCESSING_STATUS,
+      processed_at: row.PROCESSED_AT,
+      created_at: row.CREATED_AT
+    };
+  }
+
+  // Get transcript by video response ID
+  static async getTranscriptByVideoId(videoResponseId: string): Promise<VideoTranscript | null> {
+    const query = 'SELECT * FROM video_transcripts WHERE video_response_id = ?';
+    const rows = await executeQuery(query, [videoResponseId]);
+    
+    if (rows.length === 0) return null;
+    
+    const row = rows[0];
+    return {
+      id: row.ID,
+      video_response_id: row.VIDEO_RESPONSE_ID,
+      session_id: row.SESSION_ID,
+      question_id: row.QUESTION_ID,
+      transcript_text: row.TRANSCRIPT_TEXT,
+      confidence_score: row.CONFIDENCE_SCORE,
+      word_count: row.WORD_COUNT,
+      processing_status: row.PROCESSING_STATUS,
+      processed_at: row.PROCESSED_AT,
+      created_at: row.CREATED_AT
+    };
+  }
+
+  // Calculate keyword matches for a session - FIXED VERSION
+  static async calculateKeywordMatches(sessionId: string): Promise<SessionKeywordScore | null> {
+    // Get session template
+    const sessionQuery = 'SELECT template_id FROM interview_sessions WHERE id = ?';
+    const sessionRows = await executeQuery(sessionQuery, [sessionId]);
+    if (sessionRows.length === 0) return null;
+    
+    const templateId = sessionRows[0].TEMPLATE_ID;
+    
+    // Get all keywords for this template
+    const keywords = await this.getKeywordsByTemplate(templateId);
+    if (keywords.length === 0) return null;
+    
+    // Get all transcripts for this session
+    const transcriptQuery = 'SELECT * FROM video_transcripts WHERE session_id = ? AND processing_status = \'completed\'';
+    const transcripts = await executeQuery(transcriptQuery, [sessionId]);
+    
+    if (transcripts.length === 0) return null;
+    
+    // Combine all transcript text
+    const allTranscriptText = transcripts
+      .map(t => t.TRANSCRIPT_TEXT)
+      .join(' ')
+      .toLowerCase();
+    
+    // Track found keywords (DISTINCT count, not frequency)
+    const foundKeywords = new Set<string>();
+    const keywordsByCategory = {
+      technical: new Set<string>(),
+      soft_skills: new Set<string>(),
+      experience: new Set<string>(),
+      general: new Set<string>()
+    };
+    
+    // Check each keyword (distinct presence, not frequency)
+    for (const keyword of keywords) {
+      const keywordRegex = new RegExp(`\\b${keyword.keyword}\\b`, 'i');
+      const isFound = keywordRegex.test(allTranscriptText);
+      
+      if (isFound) {
+        foundKeywords.add(keyword.keyword);
+        keywordsByCategory[keyword.category as keyof typeof keywordsByCategory]?.add(keyword.keyword);
+      }
+    }
+    
+    // Calculate scores based on DISTINCT keywords found vs total keywords
+    const totalKeywordsCount = keywords.length;
+    const foundKeywordsCount = foundKeywords.size;
+    
+    // Overall score: percentage of distinct keywords found
+    const overallScore = totalKeywordsCount > 0 ? (foundKeywordsCount / totalKeywordsCount) * 100 : 0;
+    
+    // Category scores: percentage of distinct keywords found per category
+    const technicalKeywords = keywords.filter(k => k.category === 'technical');
+    const technicalFound = keywordsByCategory.technical.size;
+    const technicalScore = technicalKeywords.length > 0 ? (technicalFound / technicalKeywords.length) * 100 : 0;
+    
+    const softSkillsKeywords = keywords.filter(k => k.category === 'soft_skills');
+    const softSkillsFound = keywordsByCategory.soft_skills.size;
+    const softSkillsScore = softSkillsKeywords.length > 0 ? (softSkillsFound / softSkillsKeywords.length) * 100 : 0;
+    
+    const experienceKeywords = keywords.filter(k => k.category === 'experience');
+    const experienceFound = keywordsByCategory.experience.size;
+    const experienceScore = experienceKeywords.length > 0 ? (experienceFound / experienceKeywords.length) * 100 : 0;
+    
+    console.log('=== KEYWORD SCORING DEBUG ===');
+    console.log('Total keywords in template:', totalKeywordsCount);
+    console.log('Distinct keywords found:', foundKeywordsCount);
+    console.log('Found keywords:', Array.from(foundKeywords));
+    console.log('Overall score:', overallScore.toFixed(1) + '%');
+    console.log('Technical:', technicalFound, '/', technicalKeywords.length, '=', technicalScore.toFixed(1) + '%');
+    console.log('Soft Skills:', softSkillsFound, '/', softSkillsKeywords.length, '=', softSkillsScore.toFixed(1) + '%');
+    console.log('Experience:', experienceFound, '/', experienceKeywords.length, '=', experienceScore.toFixed(1) + '%');
+    console.log('=============================');
+    
+    // Save the score
+    const scoreId = uuidv4();
+    const scoreQuery = `
+      INSERT INTO session_keyword_scores 
+      (id, session_id, template_id, overall_score, technical_score, soft_skills_score, 
+       experience_score, total_keywords_found, total_keywords_possible, score_breakdown)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+    
+    const scoreBreakdown = JSON.stringify({
+      distinct_keywords_found: foundKeywordsCount,
+      total_keywords: totalKeywordsCount,
+      found_keywords: Array.from(foundKeywords),
+      category_breakdown: {
+        technical: {
+          found: technicalFound,
+          total: technicalKeywords.length,
+          keywords: Array.from(keywordsByCategory.technical)
+        },
+        soft_skills: {
+          found: softSkillsFound,
+          total: softSkillsKeywords.length,
+          keywords: Array.from(keywordsByCategory.soft_skills)
+        },
+        experience: {
+          found: experienceFound,
+          total: experienceKeywords.length,
+          keywords: Array.from(keywordsByCategory.experience)
+        }
+      }
+    });
+    
+    await executeQuery(scoreQuery, [
+      scoreId,
+      sessionId,
+      templateId,
+      Math.round(overallScore * 100) / 100,
+      Math.round(technicalScore * 100) / 100,
+      Math.round(softSkillsScore * 100) / 100,
+      Math.round(experienceScore * 100) / 100,
+      foundKeywordsCount, // Now stores distinct count
+      totalKeywordsCount,
+      scoreBreakdown
+    ]);
+    
+    // Return the calculated score
+    const scoreRows = await executeQuery('SELECT * FROM session_keyword_scores WHERE id = ?', [scoreId]);
+    const scoreRow = scoreRows[0];
+    
+    return {
+      id: scoreRow.ID,
+      session_id: scoreRow.SESSION_ID,
+      template_id: scoreRow.TEMPLATE_ID,
+      overall_score: scoreRow.OVERALL_SCORE,
+      technical_score: scoreRow.TECHNICAL_SCORE,
+      soft_skills_score: scoreRow.SOFT_SKILLS_SCORE,
+      experience_score: scoreRow.EXPERIENCE_SCORE,
+      total_keywords_found: scoreRow.TOTAL_KEYWORDS_FOUND,
+      total_keywords_possible: scoreRow.TOTAL_KEYWORDS_POSSIBLE,
+      score_breakdown: scoreRow.SCORE_BREAKDOWN,
+      calculated_at: scoreRow.CALCULATED_AT,
+      updated_at: scoreRow.UPDATED_AT
+    };
+  }
+
+  // Get session keyword score
+  static async getSessionScore(sessionId: string): Promise<SessionKeywordScore | null> {
+    const query = 'SELECT * FROM session_keyword_scores WHERE session_id = ? ORDER BY updated_at DESC LIMIT 1';
+    const rows = await executeQuery(query, [sessionId]);
+    
+    if (rows.length === 0) return null;
+    
+    const row = rows[0];
+    return {
+      id: row.ID,
+      session_id: row.SESSION_ID,
+      template_id: row.TEMPLATE_ID,
+      overall_score: row.OVERALL_SCORE,
+      technical_score: row.TECHNICAL_SCORE,
+      soft_skills_score: row.SOFT_SKILLS_SCORE,
+      experience_score: row.EXPERIENCE_SCORE,
+      total_keywords_found: row.TOTAL_KEYWORDS_FOUND,
+      total_keywords_possible: row.TOTAL_KEYWORDS_POSSIBLE,
+      score_breakdown: row.SCORE_BREAKDOWN,
+      calculated_at: row.CALCULATED_AT,
+      updated_at: row.UPDATED_AT
+    };
+  }
+}
+
+import { executeQuery } from '../config/snowflake';
+import { v4 as uuidv4 } from 'uuid';
+import { InterviewModel } from './Interview';
+import { KeywordModel } from './Keyword';
+
+export interface JobPosition {
+  id: string;
+  title: string;
+  description: string;
+  template_id: string;
+  created_by: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PositionQuestion {
+  id: string;
+  position_id: string;
+  question_text: string;
+  time_limit: number;
+  question_order: number;
+  created_at: string;
+}
+
+export interface PositionKeyword {
+  id: string;
+  position_id: string;
+  keyword: string;
+  category: string;
+  weight: number;
+  created_at: string;
+}
+
+export interface PositionDetail extends JobPosition {
+  questions: PositionQuestion[];
+  keywords: PositionKeyword[];
+  templateTitle: string;
+}
+
+export class PositionModel {
+  /**
+   * Create a new position from a template
+   * This copies all template questions and keywords to the position
+   */
+  static async createFromTemplate(positionData: {
+    title: string;
+    description: string;
+    template_id: string;
+    created_by: string;
+  }): Promise<JobPosition> {
+    const positionId = uuidv4();
+    
+    try {
+      // 1. Create the position record
+      const createPositionQuery = `
+        INSERT INTO job_positions (id, title, description, template_id, created_by)
+        VALUES (?, ?, ?, ?, ?)
+      `;
+      
+      await executeQuery(createPositionQuery, [
+        positionId,
+        positionData.title,
+        positionData.description,
+        positionData.template_id,
+        positionData.created_by
+      ]);
+
+      // 2. Copy template questions to position questions
+      const templateQuestions = await InterviewModel.getQuestionsByTemplate(positionData.template_id);
+      
+      for (const question of templateQuestions) {
+        const questionId = uuidv4();
+        const copyQuestionQuery = `
+          INSERT INTO position_questions (id, position_id, question_text, time_limit, question_order)
+          VALUES (?, ?, ?, ?, ?)
+        `;
+        
+        await executeQuery(copyQuestionQuery, [
+          questionId,
+          positionId,
+          question.question_text,
+          question.time_limit,
+          question.question_order
+        ]);
+      }
+
+      // 3. Copy template keywords to position keywords
+      const templateKeywords = await KeywordModel.getKeywordsByTemplate(positionData.template_id);
+      
+      for (const keyword of templateKeywords) {
+        const keywordId = uuidv4();
+        const copyKeywordQuery = `
+          INSERT INTO position_keywords (id, position_id, keyword, category, weight)
+          VALUES (?, ?, ?, ?, ?)
+        `;
+        
+        await executeQuery(copyKeywordQuery, [
+          keywordId,
+          positionId,
+          keyword.keyword,
+          keyword.category,
+          keyword.weight
+        ]);
+      }
+
+      console.log(`Position created from template: ${positionId}`);
+      return this.getPositionById(positionId)!;
+      
+    } catch (error) {
+      console.error('Failed to create position from template:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get position by ID
+   */
+  static async getPositionById(id: string): Promise<JobPosition | null> {
+    const query = 'SELECT * FROM job_positions WHERE id = ? AND is_active = true';
+    const rows = await executeQuery(query, [id]);
+    
+    if (rows.length === 0) return null;
+    
+    const row = rows[0];
+    return {
+      id: row.ID,
+      title: row.TITLE,
+      description: row.DESCRIPTION,
+      template_id: row.TEMPLATE_ID,
+      created_by: row.CREATED_BY,
+      is_active: row.IS_ACTIVE,
+      created_at: row.CREATED_AT,
+      updated_at: row.UPDATED_AT
+    };
+  }
+
+  /**
+   * Get all positions for a user
+   */
+  static async getPositionsByUser(userId: string): Promise<JobPosition[]> {
+    const query = `
+      SELECT p.*
+      FROM job_positions p
+      WHERE p.created_by = ? AND p.is_active = true 
+      ORDER BY p.created_at DESC
+    `;
+    const rows = await executeQuery(query, [userId]);
+    
+    return rows.map(row => ({
+      id: row.ID,
+      title: row.TITLE,
+      description: row.DESCRIPTION,
+      template_id: row.TEMPLATE_ID,
+      created_by: row.CREATED_BY,
+      is_active: row.IS_ACTIVE,
+      created_at: row.CREATED_AT,
+      updated_at: row.UPDATED_AT
+    }));
+  }
+
+  /**
+   * Get position with all questions and keywords
+   */
+  static async getPositionDetail(positionId: string): Promise<PositionDetail | null> {
+    const position = await this.getPositionById(positionId);
+    if (!position) return null;
+
+    // Get template title
+    const template = await InterviewModel.getTemplateById(position.template_id);
+    
+    // Get position questions
+    const questions = await this.getPositionQuestions(positionId);
+    
+    // Get position keywords
+    const keywords = await this.getPositionKeywords(positionId);
+
+    return {
+      ...position,
+      questions,
+      keywords,
+      templateTitle: template?.title || 'Unknown Template'
+    };
+  }
+
+  /**
+   * Get questions for a position
+   */
+  static async getPositionQuestions(positionId: string): Promise<PositionQuestion[]> {
+    const query = 'SELECT * FROM position_questions WHERE position_id = ? ORDER BY question_order';
+    const rows = await executeQuery(query, [positionId]);
+    
+    return rows.map(row => ({
+      id: row.ID,
+      position_id: row.POSITION_ID,
+      question_text: row.QUESTION_TEXT,
+      time_limit: row.TIME_LIMIT,
+      question_order: row.QUESTION_ORDER,
+      created_at: row.CREATED_AT
+    }));
+  }
+
+  /**
+   * Get keywords for a position
+   */
+  static async getPositionKeywords(positionId: string): Promise<PositionKeyword[]> {
+    const query = 'SELECT * FROM position_keywords WHERE position_id = ? ORDER BY category, keyword';
+    const rows = await executeQuery(query, [positionId]);
+    
+    return rows.map(row => ({
+      id: row.ID,
+      position_id: row.POSITION_ID,
+      keyword: row.KEYWORD,
+      category: row.CATEGORY,
+      weight: row.WEIGHT,
+      created_at: row.CREATED_AT
+    }));
+  }
+
+  /**
+   * Update position basic info
+   */
+  static async updatePosition(positionId: string, updates: {
+    title?: string;
+    description?: string;
+  }): Promise<void> {
+    const fields = [];
+    const values = [];
+    
+    if (updates.title !== undefined) {
+      fields.push('title = ?');
+      values.push(updates.title);
+    }
+    
+    if (updates.description !== undefined) {
+      fields.push('description = ?');
+      values.push(updates.description);
+    }
+    
+    if (fields.length === 0) return;
+    
+    fields.push('updated_at = CURRENT_TIMESTAMP()');
+    values.push(positionId);
+    
+    const query = `UPDATE job_positions SET ${fields.join(', ')} WHERE id = ?`;
+    await executeQuery(query, values);
+  }
+
+  /**
+   * Link session to position (for tracking)
+   */
+  static async linkSessionToPosition(sessionId: string, positionId: string): Promise<void> {
+    const query = 'UPDATE interview_sessions SET position_id = ? WHERE id = ?';
+    await executeQuery(query, [positionId, sessionId]);
+  }
+
+  /**
+   * Get sessions for a position
+   */
+  static async getPositionSessions(positionId: string): Promise<any[]> {
+    const query = `
+      SELECT 
+        s.id,
+        s.candidate_email,
+        s.candidate_name,
+        s.status,
+        s.started_at,
+        s.completed_at,
+        s.expires_at,
+        s.created_at,
+        COALESCE(v.videos_submitted, 0) as videos_submitted,
+        COALESCE(q.total_questions, 0) as total_questions
+      FROM interview_sessions s
+      LEFT JOIN (
+        SELECT 
+          session_id, 
+          COUNT(*) as videos_submitted 
+        FROM video_responses 
+        WHERE upload_status = 'completed'
+        GROUP BY session_id
+      ) v ON s.id = v.session_id
+      LEFT JOIN (
+        SELECT 
+          position_id, 
+          COUNT(*) as total_questions 
+        FROM position_questions 
+        GROUP BY position_id
+      ) q ON s.position_id = q.position_id
+      WHERE s.position_id = ?
+      ORDER BY s.created_at DESC
+    `;
+    
+    const rows = await executeQuery(query, [positionId]);
+    
+    return rows.map(row => ({
+      id: row.ID,
+      candidateEmail: row.CANDIDATE_EMAIL,
+      candidateName: row.CANDIDATE_NAME,
+      status: row.STATUS,
+      startedAt: row.STARTED_AT,
+      completedAt: row.COMPLETED_AT,
+      expiresAt: row.EXPIRES_AT,
+      createdAt: row.CREATED_AT,
+      videosSubmitted: row.VIDEOS_SUBMITTED || 0,
+      totalQuestions: row.TOTAL_QUESTIONS || 0
+    }));
+  }
+
+  // Add these methods to your PositionModel class (after your existing methods):
+
+  /**
+   * Update position questions (replace all)
+   */
+  static async updatePositionQuestions(positionId: string, questions: Array<{
+    text: string;
+    timeLimit: number;
+  }>): Promise<PositionQuestion[]> {
+    // Delete existing questions
+    await executeQuery('DELETE FROM position_questions WHERE position_id = ?', [positionId]);
+    
+    // Insert new questions
+    const updatedQuestions: PositionQuestion[] = [];
+    
+    for (let i = 0; i < questions.length; i++) {
+      const questionId = uuidv4();
+      const query = `
+        INSERT INTO position_questions (id, position_id, question_text, time_limit, question_order)
+        VALUES (?, ?, ?, ?, ?)
+      `;
+      
+      await executeQuery(query, [
+        questionId,
+        positionId,
+        questions[i].text,
+        questions[i].timeLimit,
+        i + 1
+      ]);
+
+      const newQuestion = await this.getPositionQuestionById(questionId);
+      if (newQuestion) updatedQuestions.push(newQuestion);
+    }
+    
+    return updatedQuestions;
+  }
+
+  /**
+   * Update position keywords (replace all)
+   */
+  static async updatePositionKeywords(positionId: string, keywords: Array<{
+    keyword: string;
+    category: string;
+    weight: number;
+  }>): Promise<PositionKeyword[]> {
+    // Delete existing keywords
+    await executeQuery('DELETE FROM position_keywords WHERE position_id = ?', [positionId]);
+    
+    // Insert new keywords
+    const updatedKeywords: PositionKeyword[] = [];
+    
+    for (const keyword of keywords) {
+      const keywordId = uuidv4();
+      const query = `
+        INSERT INTO position_keywords (id, position_id, keyword, category, weight)
+        VALUES (?, ?, ?, ?, ?)
+      `;
+      
+      await executeQuery(query, [
+        keywordId,
+        positionId,
+        keyword.keyword.toLowerCase().trim(),
+        keyword.category,
+        keyword.weight
+      ]);
+
+      const newKeyword = await this.getPositionKeywordById(keywordId);
+      if (newKeyword) updatedKeywords.push(newKeyword);
+    }
+    
+    return updatedKeywords;
+  }
+
+  /**
+   * Delete position (soft delete)
+   */
+  static async deletePosition(positionId: string): Promise<void> {
+    const query = 'UPDATE job_positions SET is_active = false, updated_at = CURRENT_TIMESTAMP() WHERE id = ?';
+    await executeQuery(query, [positionId]);
+  }
+
+  /**
+   * Helper: Get single question by ID
+   */
+  private static async getPositionQuestionById(id: string): Promise<PositionQuestion | null> {
+    const query = 'SELECT * FROM position_questions WHERE id = ?';
+    const rows = await executeQuery(query, [id]);
+    
+    if (rows.length === 0) return null;
+    
+    const row = rows[0];
+    return {
+      id: row.ID,
+      position_id: row.POSITION_ID,
+      question_text: row.QUESTION_TEXT,
+      time_limit: row.TIME_LIMIT,
+      question_order: row.QUESTION_ORDER,
+      created_at: row.CREATED_AT
+    };
+  }
+
+  /**
+   * Helper: Get single keyword by ID
+   */
+  private static async getPositionKeywordById(id: string): Promise<PositionKeyword | null> {
+    const query = 'SELECT * FROM position_keywords WHERE id = ?';
+    const rows = await executeQuery(query, [id]);
+    
+    if (rows.length === 0) return null;
+    
+    const row = rows[0];
+    return {
+      id: row.ID,
+      position_id: row.POSITION_ID,
+      keyword: row.KEYWORD,
+      category: row.CATEGORY,
+      weight: row.WEIGHT,
+      created_at: row.CREATED_AT
+    };
+  }
+}
+
+// backend/src/models/Progress.ts
+import { executeQuery } from '../config/snowflake';
+
+export interface SessionProgress {
+  session_id: string;
+  question_id: string;
+  attempts_used: number;
+  is_completed: boolean;
+  last_attempt_at: string;
+  created_at: string;
+}
+
+export class ProgressModel {
+  static async getQuestionProgress(sessionId: string, questionId: string): Promise<SessionProgress | null> {
+    const query = 'SELECT * FROM session_progress WHERE session_id = ? AND question_id = ?';
+    const rows = await executeQuery(query, [sessionId, questionId]);
+    
+    if (rows.length === 0) return null;
+    
+    const row = rows[0];
+    return {
+      session_id: row.SESSION_ID,
+      question_id: row.QUESTION_ID,
+      attempts_used: row.ATTEMPTS_USED,
+      is_completed: row.IS_COMPLETED,
+      last_attempt_at: row.LAST_ATTEMPT_AT,
+      created_at: row.CREATED_AT
+    };
+  }
+
+  static async initializeQuestionProgress(sessionId: string, questionId: string): Promise<SessionProgress> {
+    // Insert or get existing progress
+    const existing = await this.getQuestionProgress(sessionId, questionId);
+    if (existing) return existing;
+
+    const query = `
+      INSERT INTO session_progress (session_id, question_id, attempts_used, is_completed)
+      VALUES (?, ?, 0, false)
+    `;
+    
+    await executeQuery(query, [sessionId, questionId]);
+    return this.getQuestionProgress(sessionId, questionId)!;
+  }
+
+  static async recordAttempt(sessionId: string, questionId: string): Promise<number> {
+    const query = `
+      UPDATE session_progress 
+      SET attempts_used = attempts_used + 1, last_attempt_at = CURRENT_TIMESTAMP()
+      WHERE session_id = ? AND question_id = ?
+    `;
+    
+    await executeQuery(query, [sessionId, questionId]);
+    
+    // Return new attempt count
+    const progress = await this.getQuestionProgress(sessionId, questionId);
+    return progress?.attempts_used || 0;
+  }
+
+  static async markQuestionCompleted(sessionId: string, questionId: string): Promise<void> {
+    const query = `
+      UPDATE session_progress 
+      SET is_completed = true, last_attempt_at = CURRENT_TIMESTAMP()
+      WHERE session_id = ? AND question_id = ?
+    `;
+    
+    await executeQuery(query, [sessionId, questionId]);
+  }
+
+  static async getSessionProgress(sessionId: string): Promise<SessionProgress[]> {
+    const query = 'SELECT * FROM session_progress WHERE session_id = ? ORDER BY created_at';
+    const rows = await executeQuery(query, [sessionId]);
+    
+    return rows.map(row => ({
+      session_id: row.SESSION_ID,
+      question_id: row.QUESTION_ID,
+      attempts_used: row.ATTEMPTS_USED,
+      is_completed: row.IS_COMPLETED,
+      last_attempt_at: row.LAST_ATTEMPT_AT,
+      created_at: row.CREATED_AT
+    }));
+  }
+
+  static async canRetake(sessionId: string, questionId: string, maxRetakes: number = 1): Promise<boolean> {
+    const progress = await this.getQuestionProgress(sessionId, questionId);
+    if (!progress) return true; // First attempt
+    
+    return progress.attempts_used < maxRetakes && !progress.is_completed;
+  }
+}
+
+// backend/src/models/User.ts
+import { executeQuery } from '../config/snowflake';
+import bcrypt from 'bcryptjs';
+import { v4 as uuidv4 } from 'uuid';
+
+export interface User {
+  id: string;
+  email: string;
+  password_hash: string;
+  first_name: string;
+  last_name: string;
+  role: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export class UserModel {
+  static async create(userData: {
+    email: string;
+    password: string;
+    first_name: string;
+    last_name: string;
+    role?: string;
+  }): Promise<User> {
+    const id = uuidv4();
+    const password_hash = await bcrypt.hash(userData.password, 10);
+    
+    const query = `
+      INSERT INTO users (id, email, password_hash, first_name, last_name, role)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `;
+    
+    await executeQuery(query, [
+      id,
+      userData.email,
+      password_hash,
+      userData.first_name,
+      userData.last_name,
+      userData.role || 'recruiter'
+    ]);
+
+    return this.findById(id);
+  }
+
+  static async findByEmail(email: string): Promise<User | null> {
+    const query = 'SELECT * FROM users WHERE email = ? AND is_active = true';
+    const rows = await executeQuery(query, [email]);
+    
+    if (rows.length === 0) return null;
+    
+    // Convert Snowflake uppercase columns to lowercase
+    const row = rows[0];
+    return {
+      id: row.ID,
+      email: row.EMAIL,
+      password_hash: row.PASSWORD_HASH,
+      first_name: row.FIRST_NAME,
+      last_name: row.LAST_NAME,
+      role: row.ROLE,
+      is_active: row.IS_ACTIVE,
+      created_at: row.CREATED_AT,
+      updated_at: row.UPDATED_AT
+    };
+  }
+
+  static async findById(id: string): Promise<User | null> {
+    const query = 'SELECT * FROM users WHERE id = ? AND is_active = true';
+    const rows = await executeQuery(query, [id]);
+    
+    if (rows.length === 0) return null;
+    
+    // Convert Snowflake uppercase columns to lowercase
+    const row = rows[0];
+    return {
+      id: row.ID,
+      email: row.EMAIL,
+      password_hash: row.PASSWORD_HASH,
+      first_name: row.FIRST_NAME,
+      last_name: row.LAST_NAME,
+      role: row.ROLE,
+      is_active: row.IS_ACTIVE,
+      created_at: row.CREATED_AT,
+      updated_at: row.UPDATED_AT
+    };
+  }
+
+  static async validatePassword(user: User, password: string): Promise<boolean> {
+    return bcrypt.compare(password, user.password_hash);
+  }
+
+  static async updateLastLogin(id: string): Promise<void> {
+    const query = 'UPDATE users SET updated_at = CURRENT_TIMESTAMP() WHERE id = ?';
+    await executeQuery(query, [id]);
+  }
+}
+
+// backend/src/models/Video.ts
+import { executeQuery } from '../config/snowflake';
+import { v4 as uuidv4 } from 'uuid';
+
+export interface VideoResponse {
+  id: string;
+  session_id: string;
+  question_id: string;
+  file_name: string;
+  r2_key: string;           // NEW: R2 object key
+  r2_url: string;          // NEW: Public R2 URL for streaming
+  file_size_bytes: number;
+  mime_type: string;
+  upload_status: string;
+  created_at: string;
+  // Keep old fields for backward compatibility during migration
+  stage_path?: string;     // DEPRECATED: Old Snowflake path
+}
+
+export class VideoModel {
+  /**
+   * Save video metadata with R2 information
+   */
+  static async saveVideoResponse(videoData: {
+    id?: string;
+    session_id: string;
+    question_id: string;
+    file_name: string;
+    r2_key: string;
+    r2_url: string;
+    file_size_bytes: number;
+    mime_type: string;
+    upload_status?: string;
+  }): Promise<VideoResponse> {
+    const id = videoData.id || uuidv4();
+    
+    const query = `
+      INSERT INTO video_responses (
+        id, session_id, question_id, file_name, r2_key, r2_url,
+        file_size_bytes, mime_type, upload_status
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+    
+    await executeQuery(query, [
+      id,
+      videoData.session_id,
+      videoData.question_id,
+      videoData.file_name,
+      videoData.r2_key,
+      videoData.r2_url,
+      videoData.file_size_bytes,
+      videoData.mime_type,
+      videoData.upload_status || 'completed'
+    ]);
+
+    return this.getById(id)!;
+  }
+
+  /**
+   * Get video by ID
+   */
+  static async getById(id: string): Promise<VideoResponse | null> {
+    const query = 'SELECT * FROM video_responses WHERE id = ?';
+    const rows = await executeQuery(query, [id]);
+    
+    if (rows.length === 0) return null;
+    
+    const row = rows[0];
+    return {
+      id: row.ID,
+      session_id: row.SESSION_ID,
+      question_id: row.QUESTION_ID,
+      file_name: row.FILE_NAME,
+      r2_key: row.R2_KEY,
+      r2_url: row.R2_URL,
+      file_size_bytes: row.FILE_SIZE_BYTES,
+      mime_type: row.MIME_TYPE,
+      upload_status: row.UPLOAD_STATUS,
+      created_at: row.CREATED_AT,
+      stage_path: row.STAGE_PATH // For backward compatibility
+    };
+  }
+
+  /**
+   * Get video by session and question
+   */
+  static async getBySessionAndQuestion(sessionId: string, questionId: string): Promise<VideoResponse | null> {
+    const query = 'SELECT * FROM video_responses WHERE session_id = ? AND question_id = ?';
+    const rows = await executeQuery(query, [sessionId, questionId]);
+    
+    if (rows.length === 0) return null;
+    
+    const row = rows[0];
+    return {
+      id: row.ID,
+      session_id: row.SESSION_ID,
+      question_id: row.QUESTION_ID,
+      file_name: row.FILE_NAME,
+      r2_key: row.R2_KEY,
+      r2_url: row.R2_URL,
+      file_size_bytes: row.FILE_SIZE_BYTES,
+      mime_type: row.MIME_TYPE,
+      upload_status: row.UPLOAD_STATUS,
+      created_at: row.CREATED_AT,
+      stage_path: row.STAGE_PATH
+    };
+  }
+
+  /**
+   * Get all videos for a session
+   */
+  static async getBySession(sessionId: string): Promise<VideoResponse[]> {
+    const query = 'SELECT * FROM video_responses WHERE session_id = ? ORDER BY created_at';
+    const rows = await executeQuery(query, [sessionId]);
+    
+    return rows.map(row => ({
+      id: row.ID,
+      session_id: row.SESSION_ID,
+      question_id: row.QUESTION_ID,
+      file_name: row.FILE_NAME,
+      r2_key: row.R2_KEY,
+      r2_url: row.R2_URL,
+      file_size_bytes: row.FILE_SIZE_BYTES,
+      mime_type: row.MIME_TYPE,
+      upload_status: row.UPLOAD_STATUS,
+      created_at: row.CREATED_AT,
+      stage_path: row.STAGE_PATH
+    }));
+  }
+
+  /**
+   * Update video status
+   */
+  static async updateStatus(id: string, status: string): Promise<void> {
+    const query = 'UPDATE video_responses SET upload_status = ? WHERE id = ?';
+    await executeQuery(query, [status, id]);
+  }
+
+  /**
+   * Delete video record
+   */
+  static async deleteById(id: string): Promise<void> {
+    const query = 'DELETE FROM video_responses WHERE id = ?';
+    await executeQuery(query, [id]);
+  }
+
+  /**
+   * Check if video exists for session/question
+   */
+  static async exists(sessionId: string, questionId: string): Promise<boolean> {
+    const query = 'SELECT COUNT(*) as count FROM video_responses WHERE session_id = ? AND question_id = ?';
+    const rows = await executeQuery(query, [sessionId, questionId]);
+    
+    return rows[0].COUNT > 0;
+  }
+}
+
+// backend/src/routes/admin.ts
+import express from 'express';
+import { executeQuery } from '../config/snowflake';
+import { InterviewModel } from '../models/Interview';
+import { EvaluationModel } from '../models/Evaluation';
+import { EmailService } from '../services/emailService';
+import { KeywordModel } from '../models/Keyword';
+
+const router = express.Router();
+
+// Test route
+router.get('/test', (req: any, res: any) => {
+  res.json({ message: 'Admin routes working!', user: req.user });
+});
+
+// Get all interview templates for the authenticated user
+router.get('/templates', async (req: any, res: any) => {
+  try {
+    const userId = req.user?.id;
+    const templates = await InterviewModel.getTemplatesByUser(userId);
+    
+    res.json(templates);
+  } catch (error) {
+    console.error('Get templates error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Create new interview template
+router.post('/templates', async (req: any, res: any) => {
+  try {
+    const { title, description, questions } = req.body;
+    const userId = req.user?.id;
+
+    if (!title || !questions || questions.length === 0) {
+      return res.status(400).json({ error: 'Title and questions are required' });
+    }
+
+    // Create template
+    const template = await InterviewModel.createTemplate({
+      title,
+      description: description || '',
+      created_by: userId
+    });
+
+    // Add questions
+    for (let i = 0; i < questions.length; i++) {
+      await InterviewModel.addQuestion({
+        template_id: template.id,
+        question_text: questions[i].text,
+        time_limit: questions[i].timeLimit || 90,
+        question_order: i + 1
+      });
+    }
+
+    res.status(201).json({
+      message: 'Interview template created successfully',
+      template
+    });
+
+  } catch (error) {
+    console.error('Create template error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get specific template with questions
+router.get('/templates/:templateId', async (req: any, res: any) => {
+  try {
+    const { templateId } = req.params;
+    
+    const template = await InterviewModel.getTemplateById(templateId);
+    if (!template) {
+      return res.status(404).json({ error: 'Template not found' });
+    }
+
+    const questions = await InterviewModel.getQuestionsByTemplate(templateId);
+    
+    res.json({
+      ...template,
+      questions
+    });
+  } catch (error) {
+    console.error('Get template error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update template
+router.put('/templates/:templateId', async (req: any, res: any) => {
+  try {
+    const { templateId } = req.params;
+    const { title, description, questions } = req.body;
+    const userId = req.user?.id;
+
+    // Update template basic info
+    await executeQuery(
+      'UPDATE interview_templates SET title = ?, description = ?, updated_at = CURRENT_TIMESTAMP() WHERE id = ? AND created_by = ?',
+      [title, description, templateId, userId]
+    );
+
+    // Delete existing questions
+    await executeQuery('DELETE FROM interview_questions WHERE template_id = ?', [templateId]);
+
+    // Add updated questions
+    for (let i = 0; i < questions.length; i++) {
+      await InterviewModel.addQuestion({
+        template_id: templateId,
+        question_text: questions[i].text,
+        time_limit: questions[i].timeLimit,
+        question_order: i + 1
+      });
+    }
+
+    res.json({ message: 'Template updated successfully' });
+  } catch (error) {
+    console.error('Update template error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+
+// Create interview session (send to candidate)
+router.post('/templates/:templateId/sessions', async (req: any, res: any) => {
+  try {
+    const { templateId } = req.params;
+    const { candidateEmail, candidateName } = req.body;
+
+    console.log('=== EMAIL DEBUG ===');
+    console.log('SendGrid API Key exists:', !!process.env.SENDGRID_API_KEY);
+    console.log('From Email:', process.env.FROM_EMAIL);
+    console.log('From Name:', process.env.FROM_NAME);
+    console.log('Target Email:', candidateEmail);
+
+    if (!candidateEmail || !candidateName) {
+      return res.status(400).json({ error: 'Candidate email and name are required' });
+    }
+
+    // Get template details for email
+    const template = await InterviewModel.getTemplateById(templateId);
+    if (!template) {
+      return res.status(404).json({ error: 'Template not found' });
+    }
+
+    const session = await InterviewModel.createSession({
+      template_id: templateId,
+      candidate_email: candidateEmail,
+      candidate_name: candidateName
+    });
+
+    const interviewLink = `${process.env.FRONTEND_URL}/interview/${session.id}`;
+
+    console.log('About to send email...');
+    
+    // Send email
+    const emailSent = await EmailService.sendInterviewInvitation({
+      to: candidateEmail,
+      candidateName: candidateName,
+      interviewTitle: template.title,
+      interviewLink: interviewLink,
+      expiresAt: session.expires_at,
+      recruiterName: `${req.user?.first_name} ${req.user?.last_name}`
+    });
+
+    console.log('Email sent result:', emailSent);
+    
+    res.status(201).json({
+      message: 'Interview session created successfully',
+      session,
+      interviewLink,
+      emailSent: emailSent
+    });
+
+  } catch (error) {
+    console.error('Create session error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get all candidate sessions for review
+router.get('/sessions', async (req: any, res: any) => {
+  try {
+    const query = `
+SELECT 
+  s.id,
+  s.template_id,
+  s.candidate_email,
+  s.candidate_name,
+  s.status,
+  s.started_at,
+  s.completed_at,
+  s.expires_at,
+  s.created_at,
+  t.title as interview_title,
+  t.description as interview_description,
+  COALESCE(v.videos_submitted, 0) as videos_submitted,
+  COALESCE(q.total_questions, 0) as total_questions
+FROM interview_sessions s
+JOIN interview_templates t ON s.template_id = t.id
+LEFT JOIN (
+  -- Subquery to count videos per session
+  SELECT 
+    session_id, 
+    COUNT(*) as videos_submitted 
+  FROM video_responses 
+  WHERE upload_status = 'completed'
+  GROUP BY session_id
+) v ON s.id = v.session_id
+LEFT JOIN (
+  -- Subquery to count questions per template
+  SELECT 
+    template_id, 
+    COUNT(*) as total_questions 
+  FROM interview_questions 
+  GROUP BY template_id
+) q ON t.id = q.template_id
+ORDER BY s.created_at DESC;
+    `;
+    
+    const rows = await executeQuery(query);
+    
+    const sessions = rows.map(row => ({
+      id: row.ID,
+      templateId: row.TEMPLATE_ID,
+      candidateEmail: row.CANDIDATE_EMAIL,
+      candidateName: row.CANDIDATE_NAME,
+      status: row.STATUS,
+      startedAt: row.STARTED_AT,
+      completedAt: row.COMPLETED_AT,
+      expiresAt: row.EXPIRES_AT,
+      createdAt: row.CREATED_AT,
+      interviewTitle: row.INTERVIEW_TITLE,
+      interviewDescription: row.INTERVIEW_DESCRIPTION,
+      videosSubmitted: row.VIDEOS_SUBMITTED || 0,
+      totalQuestions: row.TOTAL_QUESTIONS || 0
+    }));
+    
+    res.json(sessions);
+  } catch (error) {
+    console.error('Get sessions error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get specific session with videos for review
+router.get('/sessions/:sessionId/review', async (req: any, res: any) => {
+  try {
+    const { sessionId } = req.params;
+    
+    // Get session info
+    const sessionQuery = `
+      SELECT s.*, t.title as interview_title, t.description as interview_description
+      FROM interview_sessions s
+      JOIN interview_templates t ON s.template_id = t.id
+      WHERE s.id = ?
+    `;
+    const sessionRows = await executeQuery(sessionQuery, [sessionId]);
+    
+    if (sessionRows.length === 0) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    
+    // Get questions and videos
+    const videosQuery = `
+      SELECT 
+        q.id as question_id,
+        q.question_text,
+        q.time_limit,
+        q.question_order,
+        vr.id as video_id,
+        vr.file_name,
+        vr.stage_path,
+        vr.file_size_bytes,
+        vr.upload_status,
+        vr.created_at as video_created_at
+      FROM interview_questions q
+      LEFT JOIN video_responses vr ON q.id = vr.question_id AND vr.session_id = ?
+      WHERE q.template_id = ?
+      ORDER BY q.question_order
+    `;
+    
+    const session = sessionRows[0];
+    const videoRows = await executeQuery(videosQuery, [sessionId, session.TEMPLATE_ID]);
+    
+    const questionsWithVideos = videoRows.map(row => ({
+      questionId: row.QUESTION_ID,
+      questionText: row.QUESTION_TEXT,
+      timeLimit: row.TIME_LIMIT,
+      questionOrder: row.QUESTION_ORDER,
+      video: row.VIDEO_ID ? {
+        id: row.VIDEO_ID,
+        fileName: row.FILE_NAME,
+        stagePath: row.STAGE_PATH,
+        fileSize: row.FILE_SIZE_BYTES,
+        uploadStatus: row.UPLOAD_STATUS,
+        createdAt: row.VIDEO_CREATED_AT
+      } : null
+    }));
+    
+    res.json({
+      session: {
+        id: session.ID,
+        templateId: session.TEMPLATE_ID,
+        candidateEmail: session.CANDIDATE_EMAIL,
+        candidateName: session.CANDIDATE_NAME,
+        status: session.STATUS,
+        startedAt: session.STARTED_AT,
+        completedAt: session.COMPLETED_AT,
+        createdAt: session.CREATED_AT,
+        interviewTitle: session.INTERVIEW_TITLE,
+        interviewDescription: session.INTERVIEW_DESCRIPTION
+      },
+      questions: questionsWithVideos
+    });
+    
+  } catch (error) {
+    console.error('Get session review error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Save or update evaluation for a specific question
+router.post('/sessions/:sessionId/questions/:questionId/evaluation', async (req: any, res: any) => {
+  try {
+    const { sessionId, questionId } = req.params;
+    const { rating, notes } = req.body;
+    const userId = req.user?.id;
+
+    // Validation
+    if (rating !== null && (rating < 1 || rating > 5)) {
+      return res.status(400).json({ error: 'Rating must be between 1 and 5' });
+    }
+
+    const evaluation = await EvaluationModel.saveEvaluation({
+      session_id: sessionId,
+      question_id: questionId,
+      rating: rating || null,
+      notes: notes || '',
+      evaluated_by: userId
+    });
+
+    res.json({
+      message: 'Evaluation saved successfully',
+      evaluation
+    });
+
+  } catch (error) {
+    console.error('Save evaluation error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get evaluation for a specific question
+router.get('/sessions/:sessionId/questions/:questionId/evaluation', async (req: any, res: any) => {
+  try {
+    const { sessionId, questionId } = req.params;
+    
+    const evaluation = await EvaluationModel.getEvaluation(sessionId, questionId);
+    
+    if (!evaluation) {
+      return res.status(404).json({ error: 'Evaluation not found' });
+    }
+
+    res.json(evaluation);
+
+  } catch (error) {
+    console.error('Get evaluation error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get all evaluations for a session
+router.get('/sessions/:sessionId/evaluations', async (req: any, res: any) => {
+  try {
+    const { sessionId } = req.params;
+    
+    const evaluations = await EvaluationModel.getSessionEvaluations(sessionId);
+    const averageRating = await EvaluationModel.getAverageRating(sessionId);
+    
+    res.json({
+      evaluations,
+      averageRating
+    });
+
+  } catch (error) {
+    console.error('Get session evaluations error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get keywords for a template
+router.get('/templates/:templateId/keywords', async (req: any, res: any) => {
+  try {
+    const { templateId } = req.params;
+    
+    const keywords = await KeywordModel.getKeywordsByTemplate(templateId);
+    
+    res.json({
+      keywords,
+      total: keywords.length
+    });
+  } catch (error) {
+    console.error('Get keywords error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Create/Update keywords for a template
+router.post('/templates/:templateId/keywords', async (req: any, res: any) => {
+  try {
+    const { templateId } = req.params;
+    const { keywords } = req.body;
+    const userId = req.user?.id;
+
+    if (!keywords || !Array.isArray(keywords)) {
+      return res.status(400).json({ error: 'Keywords array is required' });
+    }
+
+    // Validate keywords
+    for (const keyword of keywords) {
+      if (!keyword.keyword || typeof keyword.keyword !== 'string') {
+        return res.status(400).json({ error: 'Each keyword must have a text value' });
+      }
+      if (!keyword.category) {
+        keyword.category = 'general';
+      }
+      if (!keyword.weight) {
+        keyword.weight = 1.0;
+      }
+    }
+
+    // Update keywords (replace all existing)
+    const updatedKeywords = await KeywordModel.updateTemplateKeywords(
+      templateId, 
+      keywords, 
+      userId
+    );
+
+    res.json({
+      message: 'Keywords updated successfully',
+      keywords: updatedKeywords,
+      total: updatedKeywords.length
+    });
+
+  } catch (error) {
+    console.error('Update keywords error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Delete a specific keyword
+router.delete('/keywords/:keywordId', async (req: any, res: any) => {
+  try {
+    const { keywordId } = req.params;
+    
+    await KeywordModel.deleteKeyword(keywordId);
+    
+    res.json({ message: 'Keyword deleted successfully' });
+  } catch (error) {
+    console.error('Delete keyword error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get session keyword scores
+router.get('/sessions/:sessionId/keyword-score', async (req: any, res: any) => {
+  try {
+    const { sessionId } = req.params;
+    
+    const score = await KeywordModel.getSessionScore(sessionId);
+    
+    if (!score) {
+      return res.status(404).json({ error: 'No keyword score found for this session' });
+    }
+    
+    res.json(score);
+  } catch (error) {
+    console.error('Get keyword score error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Calculate keyword scores for a session (manual trigger)
+router.post('/sessions/:sessionId/calculate-keywords', async (req: any, res: any) => {
+  try {
+    const { sessionId } = req.params;
+    
+    const score = await KeywordModel.calculateKeywordMatches(sessionId);
+    
+    if (!score) {
+      return res.status(400).json({ 
+        error: 'Unable to calculate scores. Ensure the session has transcripts and template has keywords.' 
+      });
+    }
+    
+    res.json({
+      message: 'Keyword scores calculated successfully',
+      score
+    });
+  } catch (error) {
+    console.error('Calculate keyword scores error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get transcript and keyword matches for a specific question
+router.get('/sessions/:sessionId/questions/:questionId/transcript', async (req: any, res: any) => {
+  try {
+    const { sessionId, questionId } = req.params;
+    
+    // Get video response to find transcript
+    const videoQuery = 'SELECT * FROM video_responses WHERE session_id = ? AND question_id = ?';
+    const videoRows = await executeQuery(videoQuery, [sessionId, questionId]);
+    
+    if (videoRows.length === 0) {
+      return res.status(404).json({ error: 'Video not found' });
+    }
+
+    const videoId = videoRows[0].ID;
+    
+    // Get transcript
+    const transcriptQuery = 'SELECT * FROM video_transcripts WHERE video_response_id = ?';
+    const transcriptRows = await executeQuery(transcriptQuery, [videoId]);
+    
+    if (transcriptRows.length === 0) {
+      return res.json({
+        transcript: null,
+        keywordMatches: [],
+        message: 'Transcript not available - may still be processing'
+      });
+    }
+
+    const transcript = transcriptRows[0];
+    
+    // Get template keywords for this session
+    const templateQuery = 'SELECT template_id FROM interview_sessions WHERE id = ?';
+    const templateRows = await executeQuery(templateQuery, [sessionId]);
+    
+    if (templateRows.length === 0) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const templateId = templateRows[0].TEMPLATE_ID;
+    
+    // Get all keywords for this template
+    const keywordsQuery = 'SELECT * FROM template_keywords WHERE template_id = ?';
+    const keywordRows = await executeQuery(keywordsQuery, [templateId]);
+    
+    // Find keyword matches in transcript
+    const transcriptText = transcript.TRANSCRIPT_TEXT.toLowerCase();
+    const keywordMatches: any[] = [];
+    
+    keywordRows.forEach((keywordRow: any) => {
+      const keyword = keywordRow.KEYWORD.toLowerCase();
+      const keywordRegex = new RegExp(`\\b${keyword}\\b`, 'gi');
+      const matches = (transcriptText.match(keywordRegex) || []);
+      
+      if (matches.length > 0) {
+        keywordMatches.push({
+          keyword: keywordRow.KEYWORD,
+          category: keywordRow.CATEGORY,
+          weight: keywordRow.WEIGHT,
+          matchCount: matches.length,
+          positions: [] // We can add position tracking later if needed
+        });
+      }
+    });
+
+    res.json({
+      transcript: {
+        id: transcript.ID,
+        text: transcript.TRANSCRIPT_TEXT,
+        confidence: transcript.CONFIDENCE_SCORE,
+        wordCount: transcript.WORD_COUNT,
+        processingStatus: transcript.PROCESSING_STATUS,
+        createdAt: transcript.CREATED_AT
+      },
+      keywordMatches,
+      totalKeywords: keywordRows.length,
+      matchedKeywords: keywordMatches.length
+    });
+
+  } catch (error) {
+    console.error('Get transcript error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get overall session keyword summary
+router.get('/sessions/:sessionId/keyword-summary', async (req: any, res: any) => {
+  try {
+    const { sessionId } = req.params;
+    
+    // Get session keyword score if it exists
+    const scoreQuery = 'SELECT * FROM session_keyword_scores WHERE session_id = ? ORDER BY updated_at DESC LIMIT 1';
+    const scoreRows = await executeQuery(scoreQuery, [sessionId]);
+    
+    // Get all transcripts for this session
+    const transcriptsQuery = `
+      SELECT vt.*, vr.question_id 
+      FROM video_transcripts vt
+      JOIN video_responses vr ON vt.video_response_id = vr.id
+      WHERE vt.session_id = ?
+    `;
+    const transcriptRows = await executeQuery(transcriptsQuery, [sessionId]);
+    
+    // Get template info
+    const templateQuery = `
+      SELECT t.*, s.template_id
+      FROM interview_sessions s
+      JOIN interview_templates t ON s.template_id = t.id
+      WHERE s.id = ?
+    `;
+    const templateRows = await executeQuery(templateQuery, [sessionId]);
+    
+    if (templateRows.length === 0) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
+    const template = templateRows[0];
+    
+    // Get all keywords for this template
+    const keywordsQuery = 'SELECT * FROM template_keywords WHERE template_id = ?';
+    const keywordRows = await executeQuery(keywordsQuery, [template.TEMPLATE_ID]);
+    
+    // Calculate summary stats
+    const summary = {
+      sessionId,
+      templateTitle: template.TITLE,
+      totalQuestions: transcriptRows.length,
+      totalKeywords: keywordRows.length,
+      overallScore: scoreRows.length > 0 ? scoreRows[0].OVERALL_SCORE : null,
+      technicalScore: scoreRows.length > 0 ? scoreRows[0].TECHNICAL_SCORE : null,
+      softSkillsScore: scoreRows.length > 0 ? scoreRows[0].SOFT_SKILLS_SCORE : null,
+      experienceScore: scoreRows.length > 0 ? scoreRows[0].EXPERIENCE_SCORE : null,
+      lastCalculated: scoreRows.length > 0 ? scoreRows[0].UPDATED_AT : null,
+      transcriptionStatus: transcriptRows.every(t => t.PROCESSING_STATUS === 'completed') ? 'completed' : 'processing'
+    };
+
+    res.json(summary);
+
+  } catch (error) {
+    console.error('Get keyword summary error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+export default router;
+
+// backend/src/routes/auth.ts
+import express from 'express';
+import jwt from 'jsonwebtoken';
+import { UserModel } from '../models/User';
+
+const router = express.Router();
+
+// Test route
+router.get('/test', (req: any, res: any) => {
+  res.json({ message: 'Auth routes working!' });
+});
+
+// Register new recruiter
+router.post('/register', async (req: any, res: any) => {
+  try {
+    const { email, password, first_name, last_name } = req.body;
+
+    if (!email || !password || !first_name || !last_name) {
+      return res.status(400).json({ error: 'All fields are required' });
+    }
+
+    // Check if user already exists
+    const existingUser = await UserModel.findByEmail(email);
+    if (existingUser) {
+      return res.status(400).json({ error: 'User already exists' });
+    }
+
+    // Create new user
+    const user = await UserModel.create({
+      email,
+      password,
+      first_name,
+      last_name,
+      role: 'recruiter'
+    });
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role },
+      process.env.JWT_SECRET!,
+      { expiresIn: '24h' }
+    );
+
+    res.status(201).json({
+      message: 'User created successfully',
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        first_name: user.first_name,
+        last_name: user.last_name,
+        role: user.role
+      }
+    });
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Login
+router.post('/login', async (req: any, res: any) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+
+    // Find user
+    const user = await UserModel.findByEmail(email);
+    console.log('Found user:', user); // Add this line
+    if (!user) {
+      return res.status(400).json({ error: 'Invalid credentials' });
+    }
+
+    // Validate password
+    const isValidPassword = await UserModel.validatePassword(user, password);
+    if (!isValidPassword) {
+      return res.status(400).json({ error: 'Invalid credentials' });
+    }
+
+    // Update last login
+    await UserModel.updateLastLogin(user.id);
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role },
+      process.env.JWT_SECRET!,
+      { expiresIn: '24h' }
+    );
+
+    res.json({
+      message: 'Login successful',
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        first_name: user.first_name,
+        last_name: user.last_name,
+        role: user.role
+      }
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+export default router;
+
+// backend/src/routes/interviews.ts
+import express from 'express';
+import { InterviewModel } from '../models/Interview';
+import { ProgressModel } from '../models/Progress';
+
+const router = express.Router();
+
+// Test route
+router.get('/test', (req: any, res: any) => {
+  res.json({ message: 'Interview routes working!' });
+});
+
+// Get question progress
+router.get('/session/:sessionId/question/:questionId/progress', async (req: any, res: any) => {
+  try {
+    const { sessionId, questionId } = req.params;
+    
+    const progress = await ProgressModel.getQuestionProgress(sessionId, questionId);
+    const canRetake = await ProgressModel.canRetake(sessionId, questionId);
+    
+    res.json({
+      progress,
+      canRetake,
+      attemptsUsed: progress?.attempts_used || 0,
+      isCompleted: progress?.is_completed || false
+    });
+  } catch (error) {
+    console.error('Get progress error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Record attempt (when user starts recording)
+
+router.post('/session/:sessionId/question/:questionId/attempt', async (req: any, res: any) => {
+  try {
+    const { sessionId, questionId } = req.params;
+    
+    // Initialize progress if doesn't exist
+    await ProgressModel.initializeQuestionProgress(sessionId, questionId);
+    
+    // Record the attempt
+    await ProgressModel.recordAttempt(sessionId, questionId);
+    
+    res.json({ message: 'Attempt recorded' });
+  } catch (error) {
+    console.error('Record attempt error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Complete question (when user submits final answer)
+router.post('/session/:sessionId/question/:questionId/complete', async (req: any, res: any) => {
+  try {
+    const { sessionId, questionId } = req.params;
+    
+    await ProgressModel.markQuestionCompleted(sessionId, questionId);
+    
+    res.json({ message: 'Question completed successfully' });
+  } catch (error) {
+    console.error('Complete question error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get interview by session ID (for candidates)
+router.get('/session/:sessionId', async (req: any, res: any) => {
+  try {
+    const { sessionId } = req.params;
+    
+    const session = await InterviewModel.getSessionById(sessionId);
+    if (!session) {
+      return res.status(404).json({ error: 'Interview session not found' });
+    }
+
+    // Check if session is expired
+    if (new Date() > new Date(session.expires_at)) {
+      return res.status(410).json({ error: 'Interview session has expired' });
+    }
+
+    // Get template and questions
+    const template = await InterviewModel.getTemplateById(session.template_id);
+    const questions = await InterviewModel.getQuestionsByTemplate(session.template_id);
+
+    res.json({
+      session,
+      template,
+      questions
+    });
+  } catch (error) {
+    console.error('Get interview session error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Start interview session
+router.post('/session/:sessionId/start', async (req: any, res: any) => {
+  try {
+    const { sessionId } = req.params;
+    
+    await InterviewModel.updateSessionStatus(sessionId, 'in_progress');
+    
+    res.json({ message: 'Interview started successfully' });
+  } catch (error) {
+    console.error('Start interview error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Complete interview session
+router.post('/session/:sessionId/complete', async (req: any, res: any) => {
+  try {
+    const { sessionId } = req.params;
+    
+    await InterviewModel.updateSessionStatus(sessionId, 'completed');
+    
+    res.json({ message: 'Interview completed successfully' });
+  } catch (error) {
+    console.error('Complete interview error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+export default router;
+
+import express from 'express';
+import { PositionModel } from '../models/Position';
+import { InterviewModel } from '../models/Interview';
+import { EmailService } from '../services/emailService';
+
+const router = express.Router();
+
+// Test route
+router.get('/test', (req: any, res: any) => {
+  res.json({ message: 'Position routes working!', user: req.user });
+});
+
+// Get all positions for the authenticated user
+router.get('/', async (req: any, res: any) => {
+  try {
+    const userId = req.user?.id;
+    const positions = await PositionModel.getPositionsByUser(userId);
+    
+    res.json(positions);
+  } catch (error) {
+    console.error('Get positions error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Create new position from template
+router.post('/', async (req: any, res: any) => {
+  try {
+    const { title, description, template_id } = req.body;
+    const userId = req.user?.id;
+
+    if (!title || !template_id) {
+      return res.status(400).json({ error: 'Title and template ID are required' });
+    }
+
+    // Verify template exists
+    const template = await InterviewModel.getTemplateById(template_id);
+    if (!template) {
+      return res.status(404).json({ error: 'Template not found' });
+    }
+
+    // Create position from template
+    const position = await PositionModel.createFromTemplate({
+      title,
+      description: description || '',
+      template_id,
+      created_by: userId
+    });
+
+    res.status(201).json({
+      message: 'Position created successfully',
+      position
+    });
+
+  } catch (error) {
+    console.error('Create position error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get specific position with questions and keywords
+router.get('/:positionId', async (req: any, res: any) => {
+  try {
+    const { positionId } = req.params;
+    
+    const positionDetail = await PositionModel.getPositionDetail(positionId);
+    if (!positionDetail) {
+      return res.status(404).json({ error: 'Position not found' });
+    }
+
+    res.json(positionDetail);
+  } catch (error) {
+    console.error('Get position detail error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update position basic info
+router.put('/:positionId', async (req: any, res: any) => {
+  try {
+    const { positionId } = req.params;
+    const { title, description, questions, keywords } = req.body;
+
+    // Update basic position info
+    if (title !== undefined || description !== undefined) {
+      await PositionModel.updatePosition(positionId, { title, description });
+    }
+
+    // Update questions if provided
+    if (questions && Array.isArray(questions)) {
+      const validQuestions = questions.filter(q => q.text && q.text.trim() !== '');
+      if (validQuestions.length === 0) {
+        return res.status(400).json({ error: 'At least one question is required' });
+      }
+      
+      await PositionModel.updatePositionQuestions(positionId, validQuestions);
+    }
+
+    // Update keywords if provided
+    if (keywords && Array.isArray(keywords)) {
+      await PositionModel.updatePositionKeywords(positionId, keywords);
+    }
+
+    res.json({ message: 'Position updated successfully' });
+  } catch (error) {
+    console.error('Update position error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get position questions
+router.get('/:positionId/questions', async (req: any, res: any) => {
+  try {
+    const { positionId } = req.params;
+    
+    const questions = await PositionModel.getPositionQuestions(positionId);
+    
+    res.json({ questions });
+  } catch (error) {
+    console.error('Get position questions error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update position questions only
+router.put('/:positionId/questions', async (req: any, res: any) => {
+  try {
+    const { positionId } = req.params;
+    const { questions } = req.body;
+
+    if (!questions || !Array.isArray(questions)) {
+      return res.status(400).json({ error: 'Questions array is required' });
+    }
+
+    const validQuestions = questions.filter(q => q.text && q.text.trim() !== '');
+    if (validQuestions.length === 0) {
+      return res.status(400).json({ error: 'At least one question is required' });
+    }
+
+    const updatedQuestions = await PositionModel.updatePositionQuestions(positionId, validQuestions);
+
+    res.json({
+      message: 'Position questions updated successfully',
+      questions: updatedQuestions
+    });
+  } catch (error) {
+    console.error('Update position questions error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get position keywords
+router.get('/:positionId/keywords', async (req: any, res: any) => {
+  try {
+    const { positionId } = req.params;
+    
+    const keywords = await PositionModel.getPositionKeywords(positionId);
+    
+    res.json({ 
+      keywords,
+      total: keywords.length
+    });
+  } catch (error) {
+    console.error('Get position keywords error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update position keywords only
+router.put('/:positionId/keywords', async (req: any, res: any) => {
+  try {
+    const { positionId } = req.params;
+    const { keywords } = req.body;
+
+    if (!keywords || !Array.isArray(keywords)) {
+      return res.status(400).json({ error: 'Keywords array is required' });
+    }
+
+    // Validate keywords
+    for (const keyword of keywords) {
+      if (!keyword.keyword || typeof keyword.keyword !== 'string') {
+        return res.status(400).json({ error: 'Each keyword must have a text value' });
+      }
+      if (!keyword.category) {
+        keyword.category = 'general';
+      }
+      if (!keyword.weight) {
+        keyword.weight = 1.0;
+      }
+    }
+
+    const updatedKeywords = await PositionModel.updatePositionKeywords(positionId, keywords);
+
+    res.json({
+      message: 'Position keywords updated successfully',
+      keywords: updatedKeywords,
+      total: updatedKeywords.length
+    });
+
+  } catch (error) {
+    console.error('Update position keywords error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Create interview session from position (send to candidate)
+router.post('/:positionId/sessions', async (req: any, res: any) => {
+  try {
+    const { positionId } = req.params;
+    const { candidateEmail, candidateName } = req.body;
+
+    console.log('=== POSITION SESSION EMAIL DEBUG ===');
+    console.log('Position ID:', positionId);
+    console.log('Target Email:', candidateEmail);
+
+    if (!candidateEmail || !candidateName) {
+      return res.status(400).json({ error: 'Candidate email and name are required' });
+    }
+
+    // Get position details
+    const position = await PositionModel.getPositionById(positionId);
+    if (!position) {
+      return res.status(404).json({ error: 'Position not found' });
+    }
+
+    // Create session linked to position
+    const session = await InterviewModel.createSession({
+      template_id: position.template_id, // Keep template_id for backward compatibility
+      candidate_email: candidateEmail,
+      candidate_name: candidateName
+    });
+
+    // Update session with position_id
+    await PositionModel.linkSessionToPosition(session.id, positionId);
+
+    const interviewLink = `${process.env.FRONTEND_URL}/interview/${session.id}`;
+
+    // Send email with position title
+    const emailSent = await EmailService.sendInterviewInvitation({
+      to: candidateEmail,
+      candidateName: candidateName,
+      interviewTitle: position.title,
+      interviewLink: interviewLink,
+      expiresAt: session.expires_at,
+      recruiterName: `${req.user?.first_name} ${req.user?.last_name}`
+    });
+
+    console.log('Position session email sent result:', emailSent);
+    
+    res.status(201).json({
+      message: 'Interview session created successfully',
+      session,
+      position,
+      interviewLink,
+      emailSent: emailSent
+    });
+
+  } catch (error) {
+    console.error('Create position session error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get sessions for a specific position
+router.get('/:positionId/sessions', async (req: any, res: any) => {
+  try {
+    const { positionId } = req.params;
+    
+    const sessions = await PositionModel.getPositionSessions(positionId);
+    
+    res.json({ sessions });
+  } catch (error) {
+    console.error('Get position sessions error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Delete position
+router.delete('/:positionId', async (req: any, res: any) => {
+  try {
+    const { positionId } = req.params;
+    
+    // Check if position has any active sessions
+    const sessions = await PositionModel.getPositionSessions(positionId);
+    if (sessions.length > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete position with existing candidate sessions',
+        sessionsCount: sessions.length
+      });
+    }
+
+    await PositionModel.deletePosition(positionId);
+    
+    res.json({ message: 'Position deleted successfully' });
+  } catch (error) {
+    console.error('Delete position error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+export default router;
+
+// backend/src/routes/video.ts (UPDATED VERSION)
+import express from 'express';
+import multer from 'multer';
+import { v4 as uuidv4 } from 'uuid';
+import path from 'path';
+import fs from 'fs';
+import { R2Service } from '../services/r2Service';
+import { VideoModel } from '../models/Video';
+import { SpeechToTextService } from '../services/speechToTextService';
+import { TempFileManager } from '../utils/tempFileCleanup';
+
+const router = express.Router();
+
+// Configure multer for video uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadPath = process.env.UPLOAD_PATH || './uploads';
+    if (!fs.existsSync(uploadPath)) {
+      fs.mkdirSync(uploadPath, { recursive: true });
+    }
+    cb(null, uploadPath);
+  },
+  filename: (req, file, cb) => {
+    const timestamp = Date.now();
+    const randomId = uuidv4().substring(0, 8);
+    const extension = path.extname(file.originalname) || '.webm';
+    const fileName = `video_${timestamp}_${randomId}${extension}`;
+    cb(null, fileName);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('video/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only video files are allowed'));
+    }
+  }
+});
+
+// Upload video response to R2
+router.post('/upload', upload.single('video'), async (req: any, res: any) => {
+  try {
+    console.log('=== NEW R2 VIDEO UPLOAD ===');
+    
+    if (!req.file) {
+      return res.status(400).json({ error: 'No video file provided' });
+    }
+
+    const { sessionId, questionId } = req.body;
+    console.log('Upload request:', { sessionId, questionId, fileName: req.file.filename });
+
+    if (!sessionId || !questionId) {
+      return res.status(400).json({ error: 'Session ID and Question ID are required' });
+    }
+
+    const localFilePath = req.file.path;
+    console.log('Local file path:', localFilePath);
+
+    try {
+      // 🚀 Upload directly to R2 (no Snowflake compression!)
+      const uploadResult = await R2Service.uploadVideo(
+        sessionId,
+        questionId,
+        req.file.filename,
+        localFilePath,
+        req.file.mimetype
+      );
+
+      console.log('✅ R2 upload successful:', uploadResult);
+
+      // 💾 Save video metadata to database with R2 info
+      const videoId = uuidv4();
+      const videoRecord = await VideoModel.saveVideoResponse({
+        id: videoId,
+        session_id: sessionId,
+        question_id: questionId,
+        file_name: req.file.filename,
+        r2_key: uploadResult.key,
+        r2_url: uploadResult.publicUrl,
+        file_size_bytes: req.file.size,
+        mime_type: req.file.mimetype,
+        upload_status: 'completed'
+      });
+
+      console.log('✅ Video metadata saved to database');
+
+      // 🎤 Process transcription (read file before cleanup)
+      let fileBuffer: Buffer | null = null;
+      try {
+        fileBuffer = fs.readFileSync(localFilePath);
+        console.log(`📖 File read into memory: ${fileBuffer.length} bytes`);
+      } catch (readError) {
+        console.error('Failed to read file for transcription:', readError);
+      }
+
+      // 🧹 Clean up local temp file immediately
+      await TempFileManager.forceDeleteFile(localFilePath);
+      console.log('🗑️ Local temp file cleaned up');
+
+      // 🎙️ Start background transcription
+      if (fileBuffer) {
+        SpeechToTextService.processVideoForTranscriptionFromBuffer(
+          videoId,
+          sessionId,
+          questionId,
+          fileBuffer,
+          req.file.mimetype || 'video/webm'
+        ).catch(error => {
+          console.error('Background transcription failed:', error);
+        });
+      }
+
+      // 🎉 Success response
+      res.json({
+        message: 'Video uploaded successfully to R2',
+        videoId,
+        fileName: req.file.filename,
+        size: req.file.size,
+        streamingUrl: uploadResult.publicUrl, // ✨ Direct streaming URL!
+        r2Key: uploadResult.key,
+        transcriptionStatus: 'processing'
+      });
+
+    } catch (uploadError) {
+      console.error('❌ R2 upload failed:', uploadError);
+      
+      // Clean up local file on error
+      await TempFileManager.forceDeleteFile(localFilePath);
+      
+      res.status(500).json({ 
+        error: 'Failed to upload video to R2',
+        details: uploadError.message 
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Video upload error:', error);
+    res.status(500).json({ error: 'Upload failed' });
+  }
+});
+
+// Get video info (updated for R2)
+router.get('/session/:sessionId/question/:questionId', async (req: any, res: any) => {
+  try {
+    const { sessionId, questionId } = req.params;
+    
+    const video = await VideoModel.getBySessionAndQuestion(sessionId, questionId);
+    
+    if (!video) {
+      return res.status(404).json({ error: 'Video not found' });
+    }
+
+    res.json({
+      id: video.id,
+      sessionId: video.session_id,
+      questionId: video.question_id,
+      fileName: video.file_name,
+      streamingUrl: video.r2_url,    // ✨ Direct streaming URL
+      r2Key: video.r2_key,
+      fileSize: video.file_size_bytes,
+      mimeType: video.mime_type,
+      uploadStatus: video.upload_status,
+      createdAt: video.created_at
+    });
+
+  } catch (error) {
+    console.error('Get video error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// NEW: Direct streaming route (simple redirect to R2)
+router.get('/stream/:sessionId/:questionId/:fileName', async (req: any, res: any) => {
+  try {
+    const { sessionId, questionId } = req.params;
+    
+    const video = await VideoModel.getBySessionAndQuestion(sessionId, questionId);
+    
+    if (!video) {
+      return res.status(404).json({ error: 'Video not found' });
+    }
+
+    // Simple redirect to R2 public URL for streaming
+    console.log('🎬 Redirecting to R2 streaming URL:', video.r2_url);
+    res.redirect(video.r2_url);
+
+  } catch (error) {
+    console.error('❌ Video streaming error:', error);
+    res.status(500).json({ error: 'Streaming failed' });
+  }
+});
+
+// DEPRECATED: Keep old download route for backward compatibility
+router.get('/download/:sessionId/:questionId/:fileName', async (req: any, res: any) => {
+  try {
+    const { sessionId, questionId } = req.params;
+    
+    const video = await VideoModel.getBySessionAndQuestion(sessionId, questionId);
+    
+    if (!video) {
+      return res.status(404).json({ error: 'Video not found' });
+    }
+
+    // If it's an R2 video, redirect to streaming
+    if (video.r2_url) {
+      console.log('🔄 Redirecting old download to R2 streaming');
+      return res.redirect(video.r2_url);
+    }
+
+    // If it's an old Snowflake video, use the old complex download logic
+    // (Keep your existing download logic here for backward compatibility)
+    res.status(501).json({ error: 'Old Snowflake downloads not implemented in R2 version' });
+
+  } catch (error) {
+    console.error('❌ Video download error:', error);
+    res.status(500).json({ error: 'Download failed' });
+  }
+});
+
+// Test R2 connection
+router.get('/test-r2', async (req: any, res: any) => {
+  try {
+    const isConnected = await R2Service.testConnection();
+    
+    res.json({
+      r2Connected: isConnected,
+      message: isConnected ? 'R2 connection successful!' : 'R2 connection failed',
+      bucketName: process.env.CLOUDFLARE_BUCKET_NAME,
+    });
+  } catch (error) {
+    console.error('R2 test error:', error);
+    res.status(500).json({ error: 'R2 test failed' });
+  }
+});
+
+export default router;
+
+//backend/src/services/emailService.ts
+import sgMail from '@sendgrid/mail';
+
+sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
+
+export interface EmailData {
+  to: string;
+  candidateName: string;
+  interviewTitle: string;
+  interviewLink: string;
+  expiresAt: string;
+  recruiterName?: string;
+}
+
+export class EmailService {
+  static async sendInterviewInvitation(emailData: EmailData): Promise<boolean> {
+    try {
+      const expiryDate = new Date(emailData.expiresAt).toLocaleDateString('en-US', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+
+      const emailContent = {
+        to: emailData.to,
+        from: {
+          email: process.env.FROM_EMAIL!,
+          name: process.env.FROM_NAME!
+        },
+        subject: `Video Interview Invitation - ${emailData.interviewTitle}`,
+        html: `
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Video Interview Invitation</title>
+          </head>
+          <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+            
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+              <h1 style="margin: 0; font-size: 28px; font-weight: 300;">Video Interview Invitation</h1>
+            </div>
+            
+            <div style="background: #ffffff; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+              <p style="font-size: 18px; margin-bottom: 20px;">Hi <strong>${emailData.candidateName}</strong>,</p>
+              
+              <p style="margin-bottom: 20px;">You've been invited to complete a video interview for the <strong>${emailData.interviewTitle}</strong> position.</p>
+              
+              <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #667eea;">
+                <h3 style="margin: 0 0 15px 0; color: #667eea;">Interview Details</h3>
+                <ul style="margin: 0; padding-left: 20px;">
+                  <li style="margin-bottom: 8px;"><strong>Position:</strong> ${emailData.interviewTitle}</li>
+                  <li style="margin-bottom: 8px;"><strong>Format:</strong> Video interview with recorded responses</li>
+                  <li style="margin-bottom: 8px;"><strong>Expires:</strong> ${expiryDate}</li>
+                </ul>
+              </div>
+              
+              <div style="background: #e3f2fd; padding: 20px; border-radius: 8px; margin: 25px 0;">
+                <h3 style="margin: 0 0 15px 0; color: #1976d2;">Before You Begin</h3>
+                <ul style="margin: 0; padding-left: 20px; color: #1565c0;">
+                  <li style="margin-bottom: 8px;">Ensure you have a stable internet connection</li>
+                  <li style="margin-bottom: 8px;">Find a quiet, well-lit space</li>
+                  <li style="margin-bottom: 8px;">Allow camera and microphone access when prompted</li>
+                  <li style="margin-bottom: 8px;">You can only record each answer once, so prepare thoughtfully</li>
+                </ul>
+              </div>
+              
+              <div style="text-align: center; margin: 30px 0;">
+                <a href="${emailData.interviewLink}" 
+                   style="display: inline-block; background: #667eea; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px; box-shadow: 0 3px 6px rgba(102, 126, 234, 0.3);">
+                  Start Your Interview
+                </a>
+              </div>
+              
+              <div style="border-top: 1px solid #e0e0e0; padding-top: 20px; margin-top: 30px; font-size: 14px; color: #666;">
+                <p style="margin: 0 0 10px 0;"><strong>Need help?</strong> Contact us if you experience any technical difficulties.</p>
+                <p style="margin: 0; font-size: 12px; color: #999;">This interview link expires on ${expiryDate}. Please complete your interview before this date.</p>
+              </div>
+            </div>
+            
+            <div style="text-align: center; margin-top: 20px; font-size: 12px; color: #999;">
+              <p>Best regards,<br>${emailData.recruiterName || process.env.FROM_NAME}</p>
+            </div>
+            
+          </body>
+          </html>
+        `,
+        text: `
+Hi ${emailData.candidateName},
+
+You've been invited to complete a video interview for the ${emailData.interviewTitle} position.
+
+Interview Details:
+- Position: ${emailData.interviewTitle}
+- Format: Video interview with recorded responses
+- Expires: ${expiryDate}
+
+Before you begin:
+- Ensure you have a stable internet connection
+- Find a quiet, well-lit space
+- Allow camera and microphone access when prompted
+- You can only record each answer once, so prepare thoughtfully
+
+Start your interview: ${emailData.interviewLink}
+
+This interview link expires on ${expiryDate}.
+
+Best regards,
+${emailData.recruiterName || process.env.FROM_NAME}
+        `
+      };
+
+      await sgMail.send(emailContent);
+      console.log('Interview invitation email sent successfully to:', emailData.to);
+      return true;
+
+    } catch (error) {
+      console.error('Failed to send interview invitation email:', error);
+      return false;
+    }
+  }
+}
+
+// backend/src/services/r2Service.ts
+import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { Upload } from '@aws-sdk/lib-storage';
+// import { getSignedUrl } from '@aws-sdk/s3-request-presigner'; // Optional - install if needed
+import fs from 'fs';
+import path from 'path';
+
+// Initialize R2 client (using S3-compatible API)
+const r2Client = new S3Client({
+  region: 'auto', // R2 uses 'auto' region
+  endpoint: process.env.CLOUDFLARE_R2_ENDPOINT!,
+  credentials: {
+    accessKeyId: process.env.CLOUDFLARE_ACCESS_KEY_ID!,
+    secretAccessKey: process.env.CLOUDFLARE_SECRET_ACCESS_KEY!,
+  },
+});
+
+export interface UploadResult {
+  key: string;
+  url: string;
+  publicUrl: string;
+  size: number;
+}
+
+export class R2Service {
+  private static bucketName = process.env.CLOUDFLARE_BUCKET_NAME!;
+  
+  /**
+   * Upload video file to R2
+   */
+  static async uploadVideo(
+    sessionId: string,
+    questionId: string,
+    fileName: string,
+    filePath: string,
+    mimeType: string = 'video/webm'
+  ): Promise<UploadResult> {
+    try {
+      console.log('🚀 Starting R2 upload:', { sessionId, questionId, fileName });
+      
+      // Create structured key for organization
+      const key = `videos/${sessionId}/${questionId}/${fileName}`;
+      
+      // Read file for upload
+      const fileStream = fs.createReadStream(filePath);
+      const stats = fs.statSync(filePath);
+      
+      console.log(`📁 File size: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
+      
+      // Upload to R2 using multipart upload for large files
+      const upload = new Upload({
+        client: r2Client,
+        params: {
+          Bucket: this.bucketName,
+          Key: key,
+          Body: fileStream,
+          ContentType: mimeType,
+          // Add metadata for better organization
+          Metadata: {
+            sessionId,
+            questionId,
+            originalName: fileName,
+            uploadedAt: new Date().toISOString(),
+          },
+        },
+      });
+
+      // Execute upload with progress tracking
+      upload.on('httpUploadProgress', (progress) => {
+        if (progress.total) {
+          const percentage = Math.round((progress.loaded! / progress.total) * 100);
+          console.log(`📤 Upload progress: ${percentage}%`);
+        }
+      });
+
+      const result = await upload.done();
+      console.log('✅ R2 upload completed:', result.Location);
+
+      // Generate public URL for CDN access
+      // Try different URL format that might work better with firewalls
+      const publicUrl = `https://pub-10970cca8153420985c0ac257c234691.r2.dev/${key}`;
+      
+      return {
+        key,
+        url: result.Location!,
+        publicUrl,
+        size: stats.size,
+      };
+      
+    } catch (error) {
+      console.error('❌ R2 upload failed:', error);
+      throw new Error(`Failed to upload video to R2: ${error.message}`);
+    }
+  }
+
+  /**
+   * Upload video from buffer (for direct upload without temp files)
+   */
+  static async uploadVideoFromBuffer(
+    sessionId: string,
+    questionId: string,
+    fileName: string,
+    buffer: Buffer,
+    mimeType: string = 'video/webm'
+  ): Promise<UploadResult> {
+    try {
+      console.log('🚀 Starting R2 buffer upload:', { sessionId, questionId, fileName });
+      
+      const key = `videos/${sessionId}/${questionId}/${fileName}`;
+      
+      console.log(`📁 Buffer size: ${(buffer.length / 1024 / 1024).toFixed(2)} MB`);
+      
+      const upload = new Upload({
+        client: r2Client,
+        params: {
+          Bucket: this.bucketName,
+          Key: key,
+          Body: buffer,
+          ContentType: mimeType,
+          Metadata: {
+            sessionId,
+            questionId,
+            originalName: fileName,
+            uploadedAt: new Date().toISOString(),
+          },
+        },
+      });
+
+      const result = await upload.done();
+      console.log('✅ R2 buffer upload completed:', result.Location);
+
+      const publicUrl = `https://pub-10970cca8153420985c0ac257c234691.r2.dev/${key}`;
+      
+      return {
+        key,
+        url: result.Location!,
+        publicUrl,
+        size: buffer.length,
+      };
+      
+    } catch (error) {
+      console.error('❌ R2 buffer upload failed:', error);
+      throw new Error(`Failed to upload video buffer to R2: ${error.message}`);
+    }
+  }
+
+  /**
+   * Generate signed URL for secure access (if needed)
+   * Note: Install @aws-sdk/s3-request-presigner if you need this
+   */
+  static async getSignedUrl(key: string, expiresIn: number = 3600): Promise<string> {
+    // Uncomment this if you install @aws-sdk/s3-request-presigner
+    /*
+    try {
+      const command = new GetObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+      });
+
+      const signedUrl = await getSignedUrl(r2Client, command, { expiresIn });
+      return signedUrl;
+      
+    } catch (error) {
+      console.error('❌ Failed to generate signed URL:', error);
+      throw new Error(`Failed to generate signed URL: ${error.message}`);
+    }
+    */
+    
+    // For now, just return the public URL
+    console.log('⚠️ Using public URL instead of signed URL');
+    return this.getPublicUrl(key);
+  }
+
+  /**
+   * Delete video from R2
+   */
+  static async deleteVideo(key: string): Promise<void> {
+    try {
+      console.log('🗑️ Deleting video from R2:', key);
+      
+      const command = new DeleteObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+      });
+
+      await r2Client.send(command);
+      console.log('✅ Video deleted from R2:', key);
+      
+    } catch (error) {
+      console.error('❌ R2 delete failed:', error);
+      throw new Error(`Failed to delete video from R2: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get public streaming URL for a video
+   */
+  static getPublicUrl(key: string): string {
+    return `https://pub-10970cca8153420985c0ac257c234691.r2.dev/${key}`;;
+  }
+
+  /**
+   * Test R2 connection
+   */
+  static async testConnection(): Promise<boolean> {
+    try {
+      console.log('🔍 Testing R2 connection...');
+      
+      // Try to list objects (just to test connection)
+      const command = new GetObjectCommand({
+        Bucket: this.bucketName,
+        Key: 'test-connection', // This file doesn't need to exist
+      });
+
+      try {
+        await r2Client.send(command);
+      } catch (error) {
+        // We expect this to fail (file doesn't exist), but it confirms connection works
+        if (error.name === 'NoSuchKey' || error.$metadata?.httpStatusCode === 404) {
+          console.log('✅ R2 connection successful!');
+          return true;
+        }
+        throw error;
+      }
+      
+      return true;
+      
+    } catch (error) {
+      console.error('❌ R2 connection failed:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Generate video key from session and question info
+   */
+  static generateVideoKey(sessionId: string, questionId: string, fileName: string): string {
+    return `videos/${sessionId}/${questionId}/${fileName}`;
+  }
+}
+
+// backend/src/services/speechToTextService.ts
+import speech from '@google-cloud/speech';
+import fs from 'fs';
+import path from 'path';
+import { KeywordModel } from '../models/Keyword';
+import ffmpeg from 'fluent-ffmpeg';
+import ffmpegPath from '@ffmpeg-installer/ffmpeg';
+
+// Set FFmpeg path
+ffmpeg.setFfmpegPath(ffmpegPath.path);
+console.log('FFmpeg path set to:', ffmpegPath.path);
+
+// Initialize Google Speech client
+const speechClient = new speech.SpeechClient({
+  keyFilename: process.env.GOOGLE_SPEECH_KEY_PATH, // Path to your JSON key file
+  projectId: process.env.GOOGLE_CLOUD_PROJECT_ID
+});
+
+export interface TranscriptionResult {
+  transcript: string;
+  confidence: number;
+  wordCount: number;
+  duration: number;
+}
+
+export class SpeechToTextService {
+  
+  // Extract audio from video buffer and transcribe
+  static async transcribeFromBuffer(fileBuffer: Buffer, mimeType: string): Promise<TranscriptionResult> {
+    try {
+      console.log('Starting transcription from buffer with FFmpeg, size:', fileBuffer.length);
+      
+      const fileSizeInMB = fileBuffer.length / (1024 * 1024);
+      console.log(`Buffer size: ${fileSizeInMB.toFixed(2)} MB`);
+      console.log(`Mime type: ${mimeType}`);
+
+      // Create temp files for video and audio extraction
+      const tempDir = './temp_audio';
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+
+      const tempVideoPath = path.join(tempDir, `temp_video_${Date.now()}.webm`);
+      const tempAudioPath = path.join(tempDir, `temp_audio_${Date.now()}.wav`);
+
+      try {
+        // Write video buffer to temp file
+        fs.writeFileSync(tempVideoPath, fileBuffer);
+        console.log('Temp video file created:', tempVideoPath);
+
+        // Extract audio using FFmpeg
+        await this.extractAudioFromVideo(tempVideoPath, tempAudioPath);
+        console.log('Audio extracted to:', tempAudioPath);
+
+        // Read extracted audio file
+        const audioBuffer = fs.readFileSync(tempAudioPath);
+        const audioBytes = audioBuffer.toString('base64');
+        
+        console.log(`Audio file size: ${(audioBuffer.length / 1024).toFixed(1)} KB`);
+
+        // Transcribe the audio
+        const result = await this.transcribeSyncFromBytes(audioBytes, 'LINEAR16');
+
+        // Clean up temp files
+        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
+        if (fs.existsSync(tempAudioPath)) fs.unlinkSync(tempAudioPath);
+
+        return result;
+
+      } catch (error) {
+        // Clean up temp files on error
+        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath);
+        if (fs.existsSync(tempAudioPath)) fs.unlinkSync(tempAudioPath);
+        throw error;
+      }
+
+    } catch (error) {
+      console.error('Buffer transcription error:', error);
+      throw new Error(`Failed to transcribe from buffer: ${error.message}`);
+    }
+  }
+
+  // Extract audio from video using FFmpeg
+  static async extractAudioFromVideo(videoPath: string, audioPath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      console.log('Starting FFmpeg audio extraction...');
+      ffmpeg(videoPath)
+        .audioCodec('pcm_s16le') // Linear PCM 16-bit
+        .audioFrequency(16000)   // 16kHz sample rate
+        .audioChannels(1)        // Mono
+        .format('wav')           // WAV format
+        .output(audioPath)
+        .on('end', () => {
+          console.log('FFmpeg audio extraction completed');
+          resolve();
+        })
+        .on('error', (err) => {
+          console.error('FFmpeg error:', err);
+          reject(new Error(`Audio extraction failed: ${err.message}`));
+        })
+        .on('progress', (progress) => {
+          console.log('FFmpeg progress:', progress.percent + '% done');
+        })
+        .run();
+    });
+  }
+
+  // Sync transcription from bytes
+  static async transcribeSyncFromBytes(audioBytes: string, encoding: string): Promise<TranscriptionResult> {
+    console.log('Using synchronous transcription from extracted audio...');
+    
+    const request = {
+      audio: { content: audioBytes },
+      config: {
+        // Use LINEAR16 for better compatibility with sync API
+        encoding: 'LINEAR16' as any,
+        sampleRateHertz: 16000, // Lower sample rate for sync API
+        languageCode: 'en-US',
+        enableAutomaticPunctuation: true,
+        enableWordTimeOffsets: false, // Disable for sync API
+        useEnhanced: false, // Disable enhanced for sync API  
+        // Don't specify model for sync API
+      },
+    };
+
+    console.log('Request config:', JSON.stringify(request.config, null, 2));
+
+    const [response] = await speechClient.recognize(request);
+    return this.processTranscriptionResponse(response);
+  }
+
+  // Long-running transcription from bytes
+  static async transcribeLongRunningFromBytes(audioBytes: string, encoding: string): Promise<TranscriptionResult> {
+    console.log('Using long-running transcription from bytes...');
+    
+    const request = {
+      audio: { content: audioBytes },
+      config: {
+        encoding: encoding as any,
+        sampleRateHertz: 48000,
+        languageCode: 'en-US',
+        enableAutomaticPunctuation: true,
+        enableWordTimeOffsets: true,
+        useEnhanced: true,
+        model: 'video',
+      },
+    };
+
+    const [operation] = await speechClient.longRunningRecognize(request);
+    console.log('Long-running transcription started, waiting for completion...');
+    
+    const [response] = await operation.promise();
+    console.log('Long-running transcription completed!');
+    
+    return this.processTranscriptionResponse(response);
+  }
+
+  // Process transcription response (used by both sync and async methods)
+  static processTranscriptionResponse(response: any): TranscriptionResult {
+    if (!response.results || response.results.length === 0) {
+      console.log('No transcription results found');
+      return {
+        transcript: '',
+        confidence: 0,
+        wordCount: 0,
+        duration: 0
+      };
+    }
+
+    // Combine all transcript alternatives
+    let fullTranscript = '';
+    let totalConfidence = 0;
+    let resultCount = 0;
+
+    response.results.forEach((result: any) => {
+      if (result.alternatives && result.alternatives[0]) {
+        const alternative = result.alternatives[0];
+        fullTranscript += (alternative.transcript || '') + ' ';
+        totalConfidence += alternative.confidence || 0;
+        resultCount++;
+      }
+    });
+
+    const avgConfidence = resultCount > 0 ? totalConfidence / resultCount : 0;
+    const wordCount = fullTranscript.trim().split(/\s+/).filter(word => word.length > 0).length;
+
+    console.log('Transcription completed:', {
+      wordCount,
+      confidence: avgConfidence,
+      length: fullTranscript.length,
+      transcript: fullTranscript.substring(0, 100) + (fullTranscript.length > 100 ? '...' : '')
+    });
+
+    return {
+      transcript: fullTranscript.trim(),
+      confidence: avgConfidence,
+      wordCount,
+      duration: 0 // We'll calculate this later if needed
+    };
+  }
+
+  // Process video from buffer (NEW method for upload route)
+  static async processVideoForTranscriptionFromBuffer(
+    videoResponseId: string,
+    sessionId: string,
+    questionId: string,
+    fileBuffer: Buffer,
+    mimeType: string
+  ): Promise<void> {
+    try {
+      console.log('Processing video for transcription from buffer:', videoResponseId);
+
+      // Transcribe from buffer using FFmpeg
+      const transcriptionResult = await this.transcribeFromBuffer(fileBuffer, mimeType);
+
+      console.log('Transcription result:', {
+        transcript: transcriptionResult.transcript.substring(0, 100) + '...',
+        confidence: transcriptionResult.confidence,
+        wordCount: transcriptionResult.wordCount
+      });
+
+      // Save transcript to database
+      await KeywordModel.saveTranscript({
+        video_response_id: videoResponseId,
+        session_id: sessionId,
+        question_id: questionId,
+        transcript_text: transcriptionResult.transcript,
+        confidence_score: transcriptionResult.confidence,
+        word_count: transcriptionResult.wordCount
+      });
+
+      console.log('Transcript saved to database');
+
+      // Calculate keyword matches automatically
+      await KeywordModel.calculateKeywordMatches(sessionId);
+
+      console.log('Keyword matching completed for session:', sessionId);
+
+    } catch (error) {
+      console.error('Video processing error:', error);
+      console.warn('Transcription failed but video upload will continue');
+    }
+  }
+
+  // Test transcription with a sample file
+  static async testTranscription(): Promise<void> {
+    try {
+      console.log('Testing Google Speech-to-Text connection...');
+      
+      // Simple test - you can create a small test audio file
+      const testText = "Hello, this is a test of the speech to text service.";
+      console.log('Speech-to-Text service is configured correctly');
+      console.log('Ready to transcribe video interviews!');
+      
+    } catch (error) {
+      console.error('Speech-to-Text test failed:', error);
+      throw error;
+    }
+  }
+}
+
+// backend/src/app.ts
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+
+// Import routes
+import authRoutes from './routes/auth';
+import interviewRoutes from './routes/interviews';
+import adminRoutes from './routes/admin';
+import uploadRoutes from './routes/upload';
+import videoRoutes from './routes/video'; 
+import { R2Service } from './services/r2Service';
+
+// Import middleware
+import { authMiddleware } from './middleware/auth';
+import positionRoutes from './routes/positions';
+
+dotenv.config();
+
+const app = express();
+
+// Basic middleware
+app.use(express.json());
+app.use(cors());
+
+// Health check
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy', message: 'Server is working!' });
+});
+
+// Public routes
+app.use('/api/auth', authRoutes);
+app.use('/api/interviews', interviewRoutes);
+app.use('/api/upload', uploadRoutes);
+app.use('/api/video', videoRoutes); // Add this line
+
+// Protected routes (require authentication)
+app.use('/api/admin', authMiddleware, adminRoutes);
+app.use('/api/admin/positions', authMiddleware, positionRoutes);
+
+
+export default app;
+
+// backend/src/server.ts
+import dotenv from 'dotenv';
+dotenv.config();
+
+import app from './app';
+import { connectToSnowflake } from './config/snowflake';
+import { TempFileManager } from './utils/tempFileCleanup'; // 👈 ADD THIS IMPORT
+
+const PORT = process.env.PORT || 5000;
+
+// Connect to Snowflake first, then start server
+const startServer = async () => {
+  try {
+    await connectToSnowflake();
+    
+    // 👇 ADD THIS SECTION HERE 👇
+    // Start periodic temp file cleanup
+    TempFileManager.startPeriodicCleanup(15); // Every 15 minutes
+    
+    app.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+      console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`🔗 Health check: http://localhost:${PORT}/health`);
+      console.log(`🧹 Temp file cleanup running every 15 minutes`); // 👈 ADD THIS LOG
+    });
+  } catch (error) {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  }
+};
+
+startServer();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
