@@ -13,12 +13,14 @@ router.get('/test', (req: any, res: any) => {
   res.json({ message: 'Admin routes working!', user: req.user });
 });
 
+
 // Get all interview templates for the authenticated user
 router.get('/templates', async (req: any, res: any) => {
   try {
-    const userId = req.user?.id;
-    const templates = await InterviewModel.getTemplatesByUser(userId);
+    const userId = req.user?.id; // Add this fallback
+    console.log('Using userId:', userId); 
     
+    const templates = await InterviewModel.getTemplatesByUser(userId);
     res.json(templates);
   } catch (error) {
     console.error('Get templates error:', error);
@@ -644,5 +646,21 @@ router.get('/sessions/:sessionId/keyword-summary', async (req: any, res: any) =>
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+// Add this debug route to admin.ts
+router.get('/debug-users', async (req: any, res: any) => {
+  try {
+    const templates = await executeQuery('SELECT DISTINCT created_by FROM interview_templates');
+    const users = await executeQuery('SELECT id, email FROM users LIMIT 10');
+    
+    res.json({
+      templateCreators: templates,
+      existingUsers: users
+    });
+  } catch (error) {
+    res.json({ error: error.message });
+  }
+});
+
 
 export default router;

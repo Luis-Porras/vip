@@ -1243,9 +1243,19 @@ return (
                 <h2 className="text-lg font-bold text-white tempo-font tracking-tight">
                   POSITION TEMPLATES
                 </h2>
-                <span className="text-sm text-white bg-white/20 px-3 py-1 rounded-full font-medium">
-                  {templates.length}
-                </span>
+                <div className="flex items-center space-x-3">
+                  <span className="text-sm text-white bg-white/20 px-3 py-1 rounded-full font-medium">
+                    {templates.length}
+                  </span>
+                  {/* CREATE TEMPLATE BUTTON - ADDED HERE */}
+                  <button
+                    onClick={() => window.location.href = '/create-template'}
+                    className="tempo-font inline-flex items-center px-3 py-2 border border-white/30 text-xs font-bold rounded-md text-white bg-[#DC1125] hover:bg-white/20 transition-colors"
+                  >
+                    <Plus className="h-3 w-3 mr-1" />
+                    CREATE
+                  </button>
+                </div>
               </div>
               
               {/* Search Bar */}
@@ -1611,7 +1621,48 @@ return (
                         </span>
                         AI KEYWORDS ({selectedTemplate.keywords.length})
                       </h3>
-                      {/* Keep existing keywords content with good styling */}
+                      {selectedTemplate.keywords.length === 0 ? (
+                        <div className="text-center py-8 text-gray-500">
+                          <p>No keywords configured</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          {['technical', 'soft_skills', 'experience', 'general'].map(category => {
+                            const categoryKeywords = selectedTemplate.keywords.filter(k => k.category === category);
+                            if (categoryKeywords.length === 0) return null;
+                            
+                            return (
+                              <div key={category}>
+                                <h4 className="text-sm font-bold text-[#052049] mb-2 flex items-center tempo-font tracking-tight">
+                                  <span className="mr-2">{getCategoryIcon(category)}</span>
+                                  {category.replace('_', ' ').toUpperCase()} ({categoryKeywords.length})
+                                </h4>
+                                <div className="flex flex-wrap gap-2">
+                                  {categoryKeywords.slice(0, 10).map(keyword => (
+                                    <span
+                                      key={keyword.id}
+                                      className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium border ${getCategoryColor(keyword.category)}`}
+                                    >
+                                      {keyword.keyword}
+                                      {keyword.weight > 1 && (
+                                        <span className="ml-1 flex items-center">
+                                          <Star className="w-3 h-3" />
+                                          {keyword.weight}x
+                                        </span>
+                                      )}
+                                    </span>
+                                  ))}
+                                  {categoryKeywords.length > 10 && (
+                                    <span className="text-xs text-gray-500">
+                                      +{categoryKeywords.length - 10} more...
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -1623,7 +1674,52 @@ return (
                       </span>
                       RECENT CANDIDATES ({selectedTemplate.sessions.length})
                     </h3>
-                    {/* Keep existing candidates content */}
+                    {selectedTemplate.sessions.length === 0 ? (
+                      <div className="text-center py-8 text-gray-500">
+                        <p>No candidates have been invited yet</p>
+                        <button
+                          onClick={handleSendToCandidate}
+                          className="mt-4 tempo-font inline-flex items-center px-4 py-2 border border-transparent text-sm font-bold rounded-md text-white bg-[#DC1125] hover:bg-[#052049] transition-colors"
+                        >
+                          <Mail className="h-4 w-4 mr-2" />
+                          INVITE FIRST CANDIDATE
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {selectedTemplate.sessions.slice(0, 5).map(session => (
+                          <div key={session.id} className="flex items-center justify-between p-3 border border-gray-200 rounded-lg hover:border-[#10559A]/30 transition-colors">
+                            <div className="flex-1">
+                              <div className="text-sm font-medium text-gray-900">{session.candidateName}</div>
+                              <div className="text-sm text-gray-500">{session.candidateEmail}</div>
+                            </div>
+                            <div className="flex items-center space-x-3">
+                              {getStatusBadge(session)}
+                              <div className="text-sm text-gray-500">
+                                {session.videosSubmitted}/{session.totalQuestions}
+                              </div>
+                              <button
+                                onClick={() => window.location.href = `/review/${session.id}`}
+                                className="text-[#10559A] hover:text-[#052049] text-sm font-medium"
+                                disabled={session.videosSubmitted === 0}
+                              >
+                                {session.videosSubmitted > 0 ? 'Review' : 'No videos'}
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                        {selectedTemplate.sessions.length > 5 && (
+                          <div className="text-center pt-3">
+                            <button
+                              onClick={() => setCurrentView('candidates')}
+                              className="text-[#10559A] hover:text-[#052049] text-sm font-medium"
+                            >
+                              View all {selectedTemplate.sessions.length} candidates →
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

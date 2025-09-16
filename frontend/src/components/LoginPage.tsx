@@ -12,13 +12,16 @@ export default function LoginPage() {
   const [error, setError] = useState('');
 
   const handleLogin = async (e: React.FormEvent) => {
+    console.log('handleLogin called! ');
     e.preventDefault();
     setIsLoading(true);
     setError('');
 
     try {
-      const response = await fetch('http://localhost:5000/api/auth/login', {
+      console.log('About to fetch login...');
+      const response = await fetch(`http://localhost:5000/api/auth/test`, {
         method: 'POST',
+         mode: 'cors', // Add this
         headers: {
           'Content-Type': 'application/json',
         },
