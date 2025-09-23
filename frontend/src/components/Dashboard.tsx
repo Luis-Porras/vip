@@ -1167,43 +1167,7 @@ return (
 
    <UnifiedHeader currentPage="templates" user={user} />
 
-    {/* Carnival-Branded Navigation Tabs - SOLID WHITE */}
-    <div className="bg-white border-b border-gray-200">
-      <div className="max-w-full mx-auto px-4 sm:px-6 lg:px-8">
-        <nav className="flex space-x-8">
-          <button
-            onClick={() => setCurrentView('templates')}
-            className={`tempo-font whitespace-nowrap py-4 px-1 border-b-2 font-bold text-sm tracking-tight transition-colors ${
-              currentView === 'templates'
-                ? 'border-[#DC1125] text-[#DC1125]'
-                : 'border-transparent text-gray-500 hover:text-[#10559A] hover:border-[#10559A]'
-            }`}
-          >
-            TEMPLATES ({templates.length})
-          </button>
-          <button
-            onClick={() => setCurrentView('candidates')}
-            className={`tempo-font whitespace-nowrap py-4 px-1 border-b-2 font-bold text-sm tracking-tight transition-colors ${
-              currentView === 'candidates'
-                ? 'border-[#DC1125] text-[#DC1125]'
-                : 'border-transparent text-gray-500 hover:text-[#10559A] hover:border-[#10559A]'
-            }`}
-          >
-            CANDIDATES ({allSessions.length})
-          </button>
-          <button
-            onClick={() => setCurrentView('completed')}
-            className={`tempo-font whitespace-nowrap py-4 px-1 border-b-2 font-bold text-sm tracking-tight transition-colors ${
-              currentView === 'completed'
-                ? 'border-[#DC1125] text-[#DC1125]'
-                : 'border-transparent text-gray-500 hover:text-[#10559A] hover:border-[#10559A]'
-            }`}
-          >
-            COMPLETED ({allSessions.filter(s => s.videosSubmitted === s.totalQuestions && s.totalQuestions > 0).length})
-          </button>
-        </nav>
-      </div>
-    </div>
+  
 
     {/* Main Content */}
     <div className="max-w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">

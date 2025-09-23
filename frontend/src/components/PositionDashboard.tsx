@@ -1,7 +1,5 @@
-// frontend/src/components/PositionDashboard.tsx
 "use client"
 import React, { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
 import UnifiedHeader from './UnifiedHeader';
 import { 
   Plus, 
@@ -25,7 +23,8 @@ import {
   Trash2,
   Send,
   Star,
-  Tag
+  Tag,
+  Play
 } from 'lucide-react';
 
 interface User {
@@ -45,43 +44,17 @@ interface Position {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+  templateTitle?: string;
+  candidateCount?: number;
+  completedCount?: number;
 }
 
-interface PositionDetail extends Position {
-  questions: PositionQuestion[];
-  keywords: PositionKeyword[];
-  templateTitle: string;
-}
-
-interface PositionQuestion {
+interface Template {
   id: string;
-  position_id: string;
-  question_text: string;
-  time_limit: number;
-  question_order: number;
+  title: string;
+  description: string;
   created_at: string;
-}
-
-interface PositionKeyword {
-  id: string;
-  position_id: string;
-  keyword: string;
-  category: string;
-  weight: number;
-  created_at: string;
-}
-
-interface PositionSession {
-  id: string;
-  candidateEmail: string;
-  candidateName: string;
-  status: string;
-  startedAt: string;
-  completedAt: string;
-  expiresAt: string;
-  createdAt: string;
-  videosSubmitted: number;
-  totalQuestions: number;
+  is_active: boolean;
 }
 
 type SortDirection = 'asc' | 'desc' | null;
@@ -90,42 +63,33 @@ interface SortConfig {
   direction: SortDirection;
 }
 
-interface DateRange {
-  startDate: string;
-  endDate: string;
-}
-
 export default function PositionDashboard() {
-  const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
-  const [selectedPosition, setSelectedPosition] = useState<PositionDetail | null>(null);
-  const [positionSessions, setPositionSessions] = useState<PositionSession[]>([]);
+  const [templates, setTemplates] = useState<Template[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isLoadingDetail, setIsLoadingDetail] = useState(false);
-  const [isLoadingSessions, setIsLoadingSessions] = useState(false);
   const [error, setError] = useState('');
-
+  
   // Filtering and search state
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [dateRange, setDateRange] = useState<DateRange>({ startDate: '', endDate: '' });
+  const [templateFilter, setTemplateFilter] = useState('all');
   const [showFilters, setShowFilters] = useState(false);
-
+  
   // Sorting state
   const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'created_at', direction: 'desc' });
-
+  
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
 
-  // Send invite modal state
-  const [showSendModal, setShowSendModal] = useState(false);
-  const [candidateEmail, setCandidateEmail] = useState('');
-  const [candidateName, setCandidateName] = useState('');
-  const [isSending, setIsSending] = useState(false);
-  const [sendError, setSendError] = useState('');
-  const [sendSuccess, setSendSuccess] = useState('');
+  // Create position modal state
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
+  const [newPositionTitle, setNewPositionTitle] = useState('');
+  const [newPositionDescription, setNewPositionDescription] = useState('');
+  const [isCreating, setIsCreating] = useState(false);
+  const [createError, setCreateError] = useState('');
 
   useEffect(() => {
     const userData = localStorage.getItem('user');
@@ -133,6 +97,7 @@ export default function PositionDashboard() {
       setUser(JSON.parse(userData));
     }
     fetchPositions();
+    fetchTemplates();
   }, []);
 
   const fetchPositions = async () => {
@@ -148,9 +113,6 @@ export default function PositionDashboard() {
       if (response.ok) {
         const data = await response.json();
         setPositions(data);
-        if (data.length > 0) {
-          selectPosition(data[0].id);
-        }
       } else {
         const errorData = await response.json();
         setError(`Failed to fetch positions: ${errorData.error || response.statusText}`);
@@ -162,124 +124,25 @@ export default function PositionDashboard() {
     }
   };
 
-  const selectPosition = async (positionId: string) => {
-    if (selectedPosition?.id === positionId) return;
-    
-    setIsLoadingDetail(true);
-    setIsLoadingSessions(true);
-    
+  const fetchTemplates = async () => {
     try {
       const token = localStorage.getItem('authToken');
-      
-      // Fetch position details
-      const positionResponse = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/admin/positions/${positionId}`,
-        { headers: { 'Authorization': `Bearer ${token}` } }
-      );
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/admin/templates`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
 
-      // Fetch position sessions
-      const sessionsResponse = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/admin/positions/${positionId}/sessions`,
-        { headers: { 'Authorization': `Bearer ${token}` } }
-      );
-
-      if (positionResponse.ok) {
-        const positionData = await positionResponse.json();
-        setSelectedPosition(positionData);
-      }
-
-      if (sessionsResponse.ok) {
-        const sessionsData = await sessionsResponse.json();
-        setPositionSessions(sessionsData.sessions || []);
-      }
-    } catch (error) {
-      console.error('Failed to fetch position details:', error);
-    } finally {
-      setIsLoadingDetail(false);
-      setIsLoadingSessions(false);
-    }
-  };
-
-  // Navigation functions
-  const handleCreatePosition = () => {
-    router.push('/create-position');
-  };
-
-  const handleEditPosition = (positionId: string) => {
-    router.push(`/edit-position/${positionId}`);
-  };
-
-  const handleSendToCandidate = () => {
-    setShowSendModal(true);
-    setCandidateEmail('');
-    setCandidateName('');
-    setSendError('');
-    setSendSuccess('');
-  };
-
-  const handleSendInterview = async () => {
-    if (!selectedPosition) return;
-
-    setSendError('');
-    setSendSuccess('');
-
-    if (!candidateEmail.trim() || !candidateName.trim()) {
-      setSendError('Please enter both candidate name and email');
-      return;
-    }
-
-    setIsSending(true);
-    try {
-      const token = localStorage.getItem('authToken');
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/admin/positions/${selectedPosition.id}/sessions`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            candidateEmail: candidateEmail.trim(),
-            candidateName: candidateName.trim(),
-          }),
-        }
-      );
-
-      const data = await response.json();
       if (response.ok) {
-        const emailStatus = data.emailSent ?
-          'Interview invitation sent successfully via email!' :
-          'Session created but email failed to send. Please send the link manually.';
-        setSendSuccess(`${emailStatus}\n\nInterview Link: ${data.interviewLink}`);
-        setCandidateEmail('');
-        setCandidateName('');
-        
-        // Refresh sessions after sending
-        setTimeout(() => {
-          setShowSendModal(false);
-          setSendSuccess('');
-          selectPosition(selectedPosition.id);
-        }, 3000);
-      } else {
-        setSendError(data.error || 'Failed to send interview');
+        const data = await response.json();
+        setTemplates(data.filter((t: Template) => t.is_active));
       }
     } catch (error) {
-      setSendError(`Network error: ${error instanceof Error ? error.message : 'Please try again.'}`);
-    } finally {
-      setIsSending(false);
+      console.error('Failed to fetch templates:', error);
     }
   };
 
-  const closeSendModal = () => {
-    setShowSendModal(false);
-    setCandidateEmail('');
-    setCandidateName('');
-    setSendError('');
-    setSendSuccess('');
-  };
-
-  // Sorting functions
   const handleSort = (key: string) => {
     let direction: SortDirection = 'asc';
     if (sortConfig.key === key) {
@@ -304,53 +167,41 @@ export default function PositionDashboard() {
     return <ArrowUpDown className="w-4 h-4 text-gray-400" />;
   };
 
-  // Filtering and sorting logic
-  const getFilteredAndSortedSessions = () => {
-    let filtered = [...positionSessions];
+  const getFilteredAndSortedPositions = () => {
+      if (!positions || !Array.isArray(positions)) {
+    return [];
+  }
+    let filtered = [...(positions || [])];
 
     // Apply filters
     if (statusFilter !== 'all') {
-      filtered = filtered.filter(session => {
-        if (statusFilter === 'completed') {
-          return session.status === 'completed' || session.videosSubmitted === session.totalQuestions;
-        }
-        if (statusFilter === 'in_progress') {
-          return session.status === 'in_progress' && session.videosSubmitted > 0 && session.videosSubmitted < session.totalQuestions;
-        }
-        if (statusFilter === 'pending') {
-          return session.status === 'pending' || session.videosSubmitted === 0;
-        }
-        return session.status === statusFilter;
+      filtered = filtered.filter(position => {
+        if (statusFilter === 'active') return position.is_active;
+        if (statusFilter === 'inactive') return !position.is_active;
+        return true;
       });
+    }
+
+    if (templateFilter !== 'all') {
+      filtered = filtered.filter(position => position.template_id === templateFilter);
     }
 
     // Search filter
     if (searchTerm) {
-      filtered = filtered.filter(session =>
-        session.candidateName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        session.candidateEmail.toLowerCase().includes(searchTerm.toLowerCase())
-      );
-    }
-
-    // Date range filter
-    if (dateRange.startDate) {
-      filtered = filtered.filter(session =>
-        new Date(session.createdAt) >= new Date(dateRange.startDate)
-      );
-    }
-    if (dateRange.endDate) {
-      filtered = filtered.filter(session =>
-        new Date(session.createdAt) <= new Date(dateRange.endDate + 'T23:59:59')
+      filtered = filtered.filter(position =>
+        position.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (position.description && position.description.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (position.templateTitle && position.templateTitle.toLowerCase().includes(searchTerm.toLowerCase()))
       );
     }
 
     // Apply sorting
     if (sortConfig.direction) {
       filtered.sort((a, b) => {
-        let aValue: any = a[sortConfig.key as keyof PositionSession];
-        let bValue: any = b[sortConfig.key as keyof PositionSession];
+        let aValue: any = a[sortConfig.key as keyof Position];
+        let bValue: any = b[sortConfig.key as keyof Position];
 
-        if (sortConfig.key.includes('At') || sortConfig.key === 'createdAt') {
+        if (sortConfig.key === 'created_at' || sortConfig.key === 'updated_at') {
           aValue = new Date(aValue);
           bValue = new Date(bValue);
         } else if (typeof aValue === 'string') {
@@ -369,8 +220,10 @@ export default function PositionDashboard() {
     return filtered;
   };
 
-  // Pagination logic
-  const getPaginatedData = (data: PositionSession[]) => {
+  const getPaginatedData = (data: Position[]) => {
+      if (!data || !Array.isArray(data)) {
+    return { data: [], totalPages: 0, totalItems: 0 };
+  }
     const startIndex = (currentPage - 1) * itemsPerPage;
     const endIndex = startIndex + itemsPerPage;
     return {
@@ -380,16 +233,65 @@ export default function PositionDashboard() {
     };
   };
 
-  const getStatusBadge = (session: PositionSession) => {
-    const completed = session.videosSubmitted === session.totalQuestions && session.totalQuestions > 0;
-    const inProgress = session.videosSubmitted > 0 && session.videosSubmitted < session.totalQuestions;
+  const handleCreatePosition = () => {
+    setShowCreateModal(true);
+    setSelectedTemplateId('');
+    setNewPositionTitle('');
+    setNewPositionDescription('');
+    setCreateError('');
+  };
 
-    if (completed) {
-      return <span className="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800 tempo-font">COMPLETED</span>;
-    } else if (inProgress) {
-      return <span className="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800 tempo-font">IN PROGRESS</span>;
-    } else {
-      return <span className="inline-flex px-2 py-1 text-xs font-semibold rounded-full bg-gray-100 text-gray-800 tempo-font">PENDING</span>;
+  const handleTemplateSelect = (templateId: string) => {
+    setSelectedTemplateId(templateId);
+    const selectedTemplate = templates.find(t => t.id === templateId);
+    if (selectedTemplate) {
+      setNewPositionTitle(`${selectedTemplate.title} - Position`);
+      setNewPositionDescription(selectedTemplate.description || '');
+    }
+  };
+
+  const submitCreatePosition = async () => {
+    if (!newPositionTitle.trim()) {
+      setCreateError('Position title is required');
+      return;
+    }
+
+    setIsCreating(true);
+    setCreateError('');
+
+    try {
+      const token = localStorage.getItem('authToken');
+      
+      if (selectedTemplateId) {
+        // Create position from template
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/admin/positions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            title: newPositionTitle.trim(),
+            description: newPositionDescription.trim(),
+            template_id: selectedTemplateId,
+          }),
+        });
+
+        if (response.ok) {
+          setShowCreateModal(false);
+          fetchPositions(); // Refresh the list
+        } else {
+          const errorData = await response.json();
+          setCreateError(errorData.error || 'Failed to create position');
+        }
+      } else {
+        // Navigate to create position page for custom creation
+        window.location.href = '/create-position';
+      }
+    } catch (error: any) {
+      setCreateError(error.message || 'Network error. Please try again.');
+    } finally {
+      setIsCreating(false);
     }
   };
 
@@ -399,24 +301,6 @@ export default function PositionDashboard() {
       month: 'short',
       day: 'numeric'
     });
-  };
-
-  const getCategoryColor = (category: string) => {
-    switch (category) {
-      case 'technical': return 'bg-blue-100 text-blue-800 border-blue-200';
-      case 'soft_skills': return 'bg-green-100 text-green-800 border-green-200';
-      case 'experience': return 'bg-purple-100 text-purple-800 border-purple-200';
-      default: return 'bg-gray-100 text-gray-800 border-gray-200';
-    }
-  };
-
-  const getCategoryIcon = (category: string) => {
-    switch (category) {
-      case 'technical': return '🔧';
-      case 'soft_skills': return '🤝';
-      case 'experience': return '💼';
-      default: return '📋';
-    }
   };
 
   const SortableHeader = ({ label, sortKey }: { label: string; sortKey: string }) => (
@@ -431,8 +315,8 @@ export default function PositionDashboard() {
     </th>
   );
 
-  const filteredSessions = getFilteredAndSortedSessions();
-  const paginatedData = getPaginatedData(filteredSessions);
+  const filteredPositions = getFilteredAndSortedPositions();
+  const paginatedData = getPaginatedData(filteredPositions);
 
   if (isLoading) {
     return (
@@ -450,518 +334,384 @@ export default function PositionDashboard() {
       <UnifiedHeader currentPage="positions" user={user} />
       
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          
-          {/* Left Sidebar - Positions List */}
-          <div className="lg:col-span-1">
-            <div className="bg-white rounded-lg shadow">
-              <div className="p-4 border-b border-gray-200 bg-[#052049]">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-lg font-bold text-white tempo-font tracking-tight">
-                    JOB POSITIONS ({positions.length})
-                  </h2>
-                  <button
-                    onClick={handleCreatePosition}
-                    className="tempo-font inline-flex items-center px-3 py-2 border border-white/30 text-sm font-bold rounded-md text-white bg-white/10 hover:bg-white/20 transition-colors"
-                  >
-                    <Plus className="h-4 w-4 mr-1" />
-                    CREATE
-                  </button>
-                </div>
-              </div>
+        {/* Header with Create Button */}
+        <div className="flex items-center justify-between mb-8">
+          <div>
+            <h1 className="text-3xl font-bold text-[#052049] tempo-font tracking-tight">
+              JOB POSITIONS
+            </h1>
+            <p className="text-gray-600 mt-2">
+              Manage and create job positions for candidate interviews
+            </p>
+          </div>
+          <button
+            onClick={handleCreatePosition}
+            className="tempo-font inline-flex items-center px-6 py-3 border border-transparent text-sm font-bold rounded-md text-white bg-[#DC1125] hover:bg-[#052049] transition-colors shadow-lg"
+          >
+            <Plus className="h-5 w-5 mr-2" />
+            CREATE POSITION
+          </button>
+        </div>
 
-              {error && (
-                <div className="p-4 bg-red-50 border-b border-red-200">
-                  <span className="text-sm text-red-700">{error}</span>
-                </div>
-              )}
-
-              {positions.length === 0 ? (
-                <div className="text-center py-12">
-                  <MapPin className="mx-auto h-12 w-12 text-[#DC1125]/60" />
-                  <h3 className="mt-2 text-lg font-bold text-[#052049] tempo-font tracking-tight">
-                    NO POSITIONS CREATED
-                  </h3>
-                  <p className="mt-1 text-sm text-gray-500 mb-4">
-                    Create your first job position to start interviewing candidates.
-                  </p>
-                  <button
-                    onClick={handleCreatePosition}
-                    className="tempo-font inline-flex items-center px-4 py-2 border border-transparent text-sm font-bold rounded-md text-white bg-[#DC1125] hover:bg-[#052049] transition-colors"
-                  >
-                    <Plus className="h-4 w-4 mr-2" />
-                    CREATE POSITION
-                  </button>
-                </div>
-              ) : (
-                <div className="divide-y divide-gray-200 max-h-96 overflow-y-auto">
-                  {positions.map((position) => (
-                    <div
-                      key={position.id}
-                      onClick={() => selectPosition(position.id)}
-                      className={`p-4 cursor-pointer transition-colors hover:bg-[#10559A]/5 ${
-                        selectedPosition?.id === position.id ? 'bg-[#10559A]/10 border-r-4 border-[#DC1125]' : ''
-                      }`}
-                    >
-                      <h3 className="text-sm font-bold text-[#052049] tempo-font tracking-tight">
-                        {position.title}
-                      </h3>
-                      {position.description && (
-                        <p className="text-xs text-gray-600 mt-1 line-clamp-2">
-                          {position.description}
-                        </p>
-                      )}
-                      <div className="flex items-center justify-between mt-2">
-                        <span className="text-xs text-gray-500">
-                          {formatDate(position.created_at)}
-                        </span>
-                        <div className="flex items-center space-x-1">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleEditPosition(position.id);
-                            }}
-                            className="text-[#10559A] hover:text-[#052049] transition-colors"
-                          >
-                            <Edit3 className="h-3 w-3" />
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+        {/* Filters */}
+        <div className="bg-white rounded-lg shadow mb-6">
+          <div className="p-4 border-b border-gray-200 bg-[#10559A]">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-white tempo-font tracking-tight">POSITION FILTERS</h3>
+              <button
+                onClick={() => setShowFilters(!showFilters)}
+                className="inline-flex items-center px-3 py-2 border border-white/30 shadow-sm text-sm font-bold rounded-md text-white bg-white/10 hover:bg-white/20 tempo-font transition-colors"
+              >
+                <Filter className="w-4 h-4 mr-2" />
+                {showFilters ? 'HIDE FILTERS' : 'SHOW FILTERS'}
+              </button>
             </div>
           </div>
 
-          {/* Right Content - Position Details */}
-          <div className="lg:col-span-2">
-            {!selectedPosition ? (
-              <div className="bg-white rounded-lg shadow">
-                <div className="text-center py-12">
-                  <MapPin className="mx-auto h-12 w-12 text-gray-400" />
-                  <h3 className="mt-2 text-lg font-bold text-gray-900 tempo-font tracking-tight">
-                    SELECT A POSITION
-                  </h3>
-                  <p className="mt-1 text-sm text-gray-500">
-                    Choose a position from the left to view details and manage candidates.
-                  </p>
+          {showFilters && (
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-bold text-[#052049] mb-2 tempo-font tracking-tight">
+                  SEARCH POSITIONS
+                </label>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                  <input
+                    type="text"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#DC1125] focus:border-[#DC1125]"
+                    placeholder="Search by title, description, or template..."
+                  />
                 </div>
               </div>
-            ) : (
-              <div className="space-y-6">
-                
-                {/* Position Header */}
-                <div className="bg-white rounded-lg shadow">
-                  <div className="p-6 border-b border-gray-200 bg-gradient-to-r from-[#052049] to-[#10559A]">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h1 className="text-2xl font-bold text-white tempo-font tracking-tight">
-                          {selectedPosition.title}
-                        </h1>
-                        <p className="text-white/90 mt-1">
-                          Based on template: {selectedPosition.templateTitle}
-                        </p>
-                      </div>
-                      <div className="flex items-center space-x-3">
-                        <button
-                          onClick={() => handleEditPosition(selectedPosition.id)}
-                          className="tempo-font inline-flex items-center px-3 py-2 border border-white/30 text-sm font-bold rounded-md text-white bg-white/10 hover:bg-white/20 transition-colors"
-                        >
-                          <Edit3 className="h-4 w-4 mr-1" />
-                          EDIT
-                        </button>
-                        <button
-                          onClick={handleSendToCandidate}
-                          className="tempo-font inline-flex items-center px-4 py-2 border border-transparent text-sm font-bold rounded-md text-white bg-[#DC1125] hover:bg-red-700 transition-colors"
-                        >
-                          <Send className="h-4 w-4 mr-2" />
-                          SEND TO CANDIDATE
-                        </button>
-                      </div>
-                    </div>
-                  </div>
 
-                  {isLoadingDetail ? (
-                    <div className="p-6 text-center">
-                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-[#DC1125] mx-auto"></div>
-                    </div>
-                  ) : (
-                    <div className="p-6">
-                      {selectedPosition.description && (
-                        <p className="text-gray-700 mb-4">{selectedPosition.description}</p>
-                      )}
-                      
-                      <div className="grid grid-cols-3 gap-4">
-                        <div className="text-center p-3 bg-[#052049]/5 rounded-lg">
-                          <div className="text-xl font-bold text-[#052049] tempo-font">
-                            {selectedPosition.questions.length}
-                          </div>
-                          <div className="text-sm text-gray-600">Questions</div>
-                        </div>
-                        <div className="text-center p-3 bg-[#10559A]/5 rounded-lg">
-                          <div className="text-xl font-bold text-[#10559A] tempo-font">
-                            {selectedPosition.keywords.length}
-                          </div>
-                          <div className="text-sm text-gray-600">AI Keywords</div>
-                        </div>
-                        <div className="text-center p-3 bg-[#DC1125]/5 rounded-lg">
-                          <div className="text-xl font-bold text-[#DC1125] tempo-font">
-                            {positionSessions.length}
-                          </div>
-                          <div className="text-sm text-gray-600">Candidates</div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-bold text-[#052049] mb-2 tempo-font tracking-tight">
+                    STATUS
+                  </label>
+                  <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#DC1125]"
+                  >
+                    <option value="all">All Status</option>
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                  </select>
                 </div>
 
-                {/* Quick Overview - Questions & Keywords */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  
-                  {/* Questions Preview */}
-                  <div className="bg-white rounded-lg shadow">
-                    <div className="p-4 border-b border-gray-200 bg-[#10559A]">
-                      <h3 className="text-lg font-bold text-white tempo-font tracking-tight">
-                        QUESTIONS ({selectedPosition.questions.length})
-                      </h3>
-                    </div>
-                    <div className="p-4">
-                      {selectedPosition.questions.length === 0 ? (
-                        <p className="text-gray-500 text-sm">No questions configured</p>
-                      ) : (
-                        <div className="space-y-3">
-                          {selectedPosition.questions.slice(0, 3).map((question, index) => (
-                            <div key={question.id} className="border-l-4 border-[#10559A] pl-3">
-                              <div className="flex items-center justify-between">
-                                <span className="text-xs font-bold text-[#052049] tempo-font">
-                                  QUESTION {index + 1}
-                                </span>
-                                <span className="text-xs text-gray-500 flex items-center">
-                                  <Clock className="w-3 h-3 mr-1" />
-                                  {question.time_limit}s
-                                </span>
-                              </div>
-                              <p className="text-sm text-gray-700 mt-1 line-clamp-2">
-                                {question.question_text}
-                              </p>
-                            </div>
-                          ))}
-                          {selectedPosition.questions.length > 3 && (
-                            <p className="text-xs text-gray-500 text-center">
-                              +{selectedPosition.questions.length - 3} more questions
-                            </p>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Keywords Preview */}
-                  <div className="bg-white rounded-lg shadow">
-                    <div className="p-4 border-b border-gray-200 bg-[#10559A]">
-                      <h3 className="text-lg font-bold text-white tempo-font tracking-tight">
-                        AI KEYWORDS ({selectedPosition.keywords.length})
-                      </h3>
-                    </div>
-                    <div className="p-4">
-                      {selectedPosition.keywords.length === 0 ? (
-                        <p className="text-gray-500 text-sm">No keywords configured</p>
-                      ) : (
-                        <div className="space-y-3">
-                          {Object.entries(
-                            selectedPosition.keywords.reduce((acc, keyword) => {
-                              if (!acc[keyword.category]) acc[keyword.category] = [];
-                              acc[keyword.category].push(keyword);
-                              return acc;
-                            }, {} as Record<string, PositionKeyword[]>)
-                          ).map(([category, keywords]) => (
-                            <div key={category}>
-                              <h4 className="text-xs font-bold text-[#052049] mb-2 flex items-center tempo-font tracking-tight">
-                                <span className="mr-1">{getCategoryIcon(category)}</span>
-                                {category.replace('_', ' ').toUpperCase()}
-                              </h4>
-                              <div className="flex flex-wrap gap-1">
-                                {keywords.slice(0, 6).map((keyword) => (
-                                  <span
-                                    key={keyword.id}
-                                    className={`inline-flex items-center px-2 py-1 rounded-full text-xs border ${getCategoryColor(keyword.category)}`}
-                                  >
-                                    {keyword.keyword}
-                                    {keyword.weight > 1 && (
-                                      <Star className="w-3 h-3 ml-1" />
-                                    )}
-                                  </span>
-                                ))}
-                                {keywords.length > 6 && (
-                                  <span className="text-xs text-gray-500">
-                                    +{keywords.length - 6} more
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Candidates Table */}
-                <div className="bg-white rounded-lg shadow">
-                  <div className="p-4 border-b border-gray-200 bg-[#052049]">
-                    <h3 className="text-lg font-bold text-white tempo-font tracking-tight">
-                      CANDIDATES ({filteredSessions.length})
-                    </h3>
-                  </div>
-
-                  {/* Filters */}
-                  <div className="p-4 border-b border-gray-200 bg-gray-50">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-4">
-                        <div className="relative">
-                          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-                          <input
-                            type="text"
-                            value={searchTerm}
-                            onChange={(e) => setSearchTerm(e.target.value)}
-                            className="pl-10 pr-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[#DC1125]"
-                            placeholder="Search candidates..."
-                          />
-                        </div>
-                        <select
-                          value={statusFilter}
-                          onChange={(e) => setStatusFilter(e.target.value)}
-                          className="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-[#DC1125]"
-                        >
-                          <option value="all">All Status</option>
-                          <option value="completed">Completed</option>
-                          <option value="in_progress">In Progress</option>
-                          <option value="pending">Pending</option>
-                        </select>
-                      </div>
-                    </div>
-                  </div>
-
-                  {isLoadingSessions ? (
-                    <div className="p-6 text-center">
-                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-[#DC1125] mx-auto"></div>
-                    </div>
-                  ) : paginatedData.data.length === 0 ? (
-                    <div className="text-center py-12">
-                      <Users className="mx-auto h-12 w-12 text-[#DC1125]/60" />
-                      <h3 className="mt-2 text-lg font-bold text-[#052049] tempo-font tracking-tight">
-                        NO CANDIDATES YET
-                      </h3>
-                      <p className="mt-1 text-sm text-gray-500 mb-4">
-                        Send interview invitations to start collecting candidate responses.
-                      </p>
-                      <button
-                        onClick={handleSendToCandidate}
-                        className="tempo-font inline-flex items-center px-4 py-2 border border-transparent text-sm font-bold rounded-md text-white bg-[#DC1125] hover:bg-[#052049] transition-colors"
-                      >
-                        <Send className="h-4 w-4 mr-2" />
-                        SEND INVITATION
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="overflow-x-auto">
-                        <table className="min-w-full divide-y divide-gray-200">
-                          <thead className="bg-gray-50">
-                            <tr>
-                              <SortableHeader label="CANDIDATE" sortKey="candidateName" />
-                              <SortableHeader label="STATUS" sortKey="status" />
-                              <SortableHeader label="SENT DATE" sortKey="createdAt" />
-                              <SortableHeader label="PROGRESS" sortKey="videosSubmitted" />
-                              <th className="px-6 py-3 text-right text-xs font-bold text-gray-500 uppercase tracking-wider tempo-font">
-                                ACTIONS
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody className="bg-white divide-y divide-gray-200">
-                            {paginatedData.data.map((session) => (
-                              <tr key={session.id} className="hover:bg-[#10559A]/5 transition-colors">
-                                <td className="px-6 py-4 whitespace-nowrap">
-                                  <div>
-                                    <div className="text-sm font-bold text-[#052049] tempo-font">
-                                      {session.candidateName}
-                                    </div>
-                                    <div className="text-sm text-gray-500">
-                                      {session.candidateEmail}
-                                    </div>
-                                  </div>
-                                </td>
-                                <td className="px-6 py-4 whitespace-nowrap">
-                                  {getStatusBadge(session)}
-                                </td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                                  {formatDate(session.createdAt)}
-                                </td>
-                                <td className="px-6 py-4 whitespace-nowrap">
-                                  <div className="text-sm font-bold text-gray-900 tempo-font">
-                                    {session.videosSubmitted}/{session.totalQuestions} VIDEOS
-                                  </div>
-                                </td>
-                                <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                  <button
-                                    onClick={() => router.push(`/review/${session.id}`)}
-                                    className="tempo-font text-[#10559A] hover:text-[#052049] font-bold transition-colors"
-                                    disabled={session.videosSubmitted === 0}
-                                  >
-                                    {session.videosSubmitted > 0 ? 'REVIEW' : 'NO VIDEOS'}
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-
-                      {/* Pagination */}
-                      <div className="flex items-center justify-between px-6 py-3 bg-white border-t border-gray-200">
-                        <div className="flex-1 flex justify-between sm:hidden">
-                          <button
-                            onClick={() => setCurrentPage(currentPage - 1)}
-                            disabled={currentPage === 1}
-                            className="relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
-                          >
-                            Previous
-                          </button>
-                          <button
-                            onClick={() => setCurrentPage(currentPage + 1)}
-                            disabled={currentPage === paginatedData.totalPages}
-                            className="ml-3 relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
-                          >
-                            Next
-                          </button>
-                        </div>
-                        <div className="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
-                          <div>
-                            <p className="text-sm text-gray-700 tempo-font">
-                              Showing <span className="font-bold text-[#052049]">{((currentPage - 1) * itemsPerPage) + 1}</span> to{' '}
-                              <span className="font-bold text-[#052049]">{Math.min(currentPage * itemsPerPage, paginatedData.totalItems)}</span> of{' '}
-                              <span className="font-bold text-[#052049]">{paginatedData.totalItems}</span> candidates
-                            </p>
-                          </div>
-                          <div>
-                            <nav className="relative z-0 inline-flex rounded-md shadow-sm -space-x-px">
-                              <button
-                                onClick={() => setCurrentPage(currentPage - 1)}
-                                disabled={currentPage === 1}
-                                className="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50"
-                              >
-                                <ChevronLeft className="h-5 w-5" />
-                              </button>
-                              {Array.from({ length: Math.min(paginatedData.totalPages, 5) }, (_, i) => {
-                                const page = i + 1;
-                                return (
-                                  <button
-                                    key={page}
-                                    onClick={() => setCurrentPage(page)}
-                                    className={`relative inline-flex items-center px-4 py-2 border text-sm font-bold tempo-font ${
-                                      page === currentPage
-                                        ? 'z-10 bg-[#DC1125] border-[#DC1125] text-white'
-                                        : 'bg-white border-gray-300 text-gray-500 hover:bg-gray-50'
-                                    }`}
-                                  >
-                                    {page}
-                                  </button>
-                                );
-                              })}
-                              <button
-                                onClick={() => setCurrentPage(currentPage + 1)}
-                                disabled={currentPage === paginatedData.totalPages}
-                                className="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50"
-                              >
-                                <ChevronRight className="h-5 w-5" />
-                              </button>
-                            </nav>
-                          </div>
-                        </div>
-                      </div>
-                    </>
-                  )}
+                <div>
+                  <label className="block text-sm font-bold text-[#052049] mb-2 tempo-font tracking-tight">
+                    TEMPLATE
+                  </label>
+                  <select
+                    value={templateFilter}
+                    onChange={(e) => setTemplateFilter(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#DC1125]"
+                  >
+                    <option value="all">All Templates</option>
+                    {templates.map(template => (
+                      <option key={template.id} value={template.id}>
+                        {template.title}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
-            )}
+            </div>
+          )}
+        </div>
+
+        {/* Positions Table */}
+        <div className="bg-white rounded-lg shadow">
+          <div className="px-6 py-4 border-b border-gray-200 bg-[#052049]">
+            <h2 className="text-2xl font-bold text-white tempo-font tracking-tight">
+              POSITIONS ({filteredPositions.length})
+            </h2>
           </div>
+
+          {error && (
+            <div className="p-6 bg-red-50 border-b border-red-200">
+              <span className="text-sm text-red-700">{error}</span>
+            </div>
+          )}
+
+          {paginatedData.data.length === 0 ? (
+            <div className="text-center py-12">
+              <MapPin className="mx-auto h-12 w-12 text-[#DC1125]/60" />
+              <h3 className="mt-2 text-lg font-bold text-[#052049] tempo-font tracking-tight">
+                {positions.length === 0 ? 'NO POSITIONS CREATED' : 'NO POSITIONS FOUND'}
+              </h3>
+              <p className="mt-1 text-sm text-gray-500 mb-4">
+                {positions.length === 0
+                  ? "Create your first job position to start interviewing candidates."
+                  : "Try adjusting your search or filter criteria."
+                }
+              </p>
+              {positions.length === 0 && (
+                <button
+                  onClick={handleCreatePosition}
+                  className="tempo-font inline-flex items-center px-4 py-2 border border-transparent text-sm font-bold rounded-md text-white bg-[#DC1125] hover:bg-[#052049] transition-colors"
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  CREATE FIRST POSITION
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <SortableHeader label="POSITION TITLE" sortKey="title" />
+                      <SortableHeader label="STATUS" sortKey="is_active" />
+                      <SortableHeader label="CREATED" sortKey="created_at" />
+                      <SortableHeader label="TEMPLATE" sortKey="templateTitle" />
+                      <th className="px-6 py-3 text-right text-xs font-bold text-gray-500 uppercase tracking-wider tempo-font">
+                        ACTIONS
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {paginatedData.data.map((position) => (
+                      <tr key={position.id} className="hover:bg-[#10559A]/5 transition-colors">
+                        <td className="px-6 py-4">
+                          <div>
+                            <div className="text-sm font-bold text-[#052049] tempo-font">
+                              {position.title}
+                            </div>
+                            {position.description && (
+                              <div className="text-sm text-gray-500 mt-1 line-clamp-2">
+                                {position.description}
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full tempo-font ${
+                            position.is_active
+                              ? 'bg-green-100 text-green-800'
+                              : 'bg-gray-100 text-gray-800'
+                          }`}>
+                            {position.is_active ? 'ACTIVE' : 'INACTIVE'}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                          {formatDate(position.created_at)}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          {position.templateTitle || 'N/A'}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+                          <button
+                            onClick={() => window.location.href = `/edit-position/${position.id}`}
+                            className="tempo-font text-[#10559A] hover:text-[#052049] font-bold transition-colors"
+                          >
+                            EDIT
+                          </button>
+                          <button
+                            onClick={() => window.location.href = `/positions/${position.id}/candidates`}
+                            className="tempo-font text-[#DC1125] hover:text-red-700 font-bold transition-colors"
+                          >
+                            VIEW
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pagination */}
+              <div className="flex items-center justify-between px-6 py-3 bg-white border-t border-gray-200">
+                <div className="flex-1 flex justify-between sm:hidden">
+                  <button
+                    onClick={() => setCurrentPage(currentPage - 1)}
+                    disabled={currentPage === 1}
+                    className="relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    onClick={() => setCurrentPage(currentPage + 1)}
+                    disabled={currentPage === paginatedData.totalPages}
+                    className="ml-3 relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    Next
+                  </button>
+                </div>
+                <div className="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm text-gray-700 tempo-font">
+                      Showing <span className="font-bold text-[#052049]">{((currentPage - 1) * itemsPerPage) + 1}</span> to{' '}
+                      <span className="font-bold text-[#052049]">{Math.min(currentPage * itemsPerPage, paginatedData.totalItems)}</span> of{' '}
+                      <span className="font-bold text-[#052049]">{paginatedData.totalItems}</span> positions
+                    </p>
+                  </div>
+                  <div>
+                    <nav className="relative z-0 inline-flex rounded-md shadow-sm -space-x-px">
+                      <button
+                        onClick={() => setCurrentPage(currentPage - 1)}
+                        disabled={currentPage === 1}
+                        className="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        <ChevronLeft className="h-5 w-5" />
+                      </button>
+                      
+                      {Array.from({ length: Math.min(paginatedData.totalPages, 5) }, (_, i) => {
+                        const page = i + 1;
+                        return (
+                          <button
+                            key={page}
+                            onClick={() => setCurrentPage(page)}
+                            className={`relative inline-flex items-center px-4 py-2 border text-sm font-bold tempo-font ${
+                              page === currentPage
+                                ? 'z-10 bg-[#DC1125] border-[#DC1125] text-white'
+                                : 'bg-white border-gray-300 text-gray-500 hover:bg-gray-50'
+                            }`}
+                          >
+                            {page}
+                          </button>
+                        );
+                      })}
+                      
+                      <button
+                        onClick={() => setCurrentPage(currentPage + 1)}
+                        disabled={currentPage === paginatedData.totalPages}
+                        className="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        <ChevronRight className="h-5 w-5" />
+                      </button>
+                    </nav>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
-      {/* Send to Candidate Modal */}
-      {showSendModal && (
+      {/* Create Position Modal */}
+      {showCreateModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-gray-200 bg-[#052049]">
-              <h3 className="text-lg font-bold text-white tempo-font tracking-tight">
-                SEND INTERVIEW INVITATION
-              </h3>
-              <p className="text-white/90 text-sm mt-1">
-                {selectedPosition?.title}
-              </p>
-            </div>
-            <div className="p-6">
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Candidate Name *
-                  </label>
-                  <input
-                    type="text"
-                    value={candidateName}
-                    onChange={(e) => setCandidateName(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#DC1125]"
-                    placeholder="Enter candidate's full name"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Email Address *
-                  </label>
-                  <input
-                    type="email"
-                    value={candidateEmail}
-                    onChange={(e) => setCandidateEmail(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#DC1125]"
-                    placeholder="candidate@example.com"
-                  />
-                </div>
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-bold text-white tempo-font tracking-tight">
+                  CREATE NEW POSITION
+                </h3>
+                <button
+                  onClick={() => setShowCreateModal(false)}
+                  className="text-white hover:text-gray-300"
+                >
+                  <X className="h-6 w-6" />
+                </button>
               </div>
-              
-              {sendError && (
-                <div className="mt-4 bg-red-50 border border-red-200 rounded-md p-3">
-                  <span className="text-sm text-red-700">{sendError}</span>
-                </div>
-              )}
-              
-              {sendSuccess && (
-                <div className="mt-4 bg-green-50 border border-green-200 rounded-md p-3">
-                  <span className="text-sm text-green-700 whitespace-pre-line">{sendSuccess}</span>
-                </div>
-              )}
             </div>
+            
+            <div className="p-6">
+              <div className="space-y-6">
+                {/* Template Selection */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-3">
+                    Start from Template (Optional)
+                  </label>
+                  <div className="grid grid-cols-1 gap-3 max-h-60 overflow-y-auto">
+                    <div
+                      onClick={() => handleTemplateSelect('')}
+                      className={`p-4 border-2 rounded-lg cursor-pointer transition-colors ${
+                        selectedTemplateId === ''
+                          ? 'border-[#DC1125] bg-[#DC1125]/5'
+                          : 'border-gray-200 hover:border-gray-300'
+                      }`}
+                    >
+                      <div className="font-medium text-gray-900">Start from Scratch</div>
+                      <div className="text-sm text-gray-500">Create a custom position without using a template</div>
+                    </div>
+                    
+                    {templates.map(template => (
+                      <div
+                        key={template.id}
+                        onClick={() => handleTemplateSelect(template.id)}
+                        className={`p-4 border-2 rounded-lg cursor-pointer transition-colors ${
+                          selectedTemplateId === template.id
+                            ? 'border-[#DC1125] bg-[#DC1125]/5'
+                            : 'border-gray-200 hover:border-gray-300'
+                        }`}
+                      >
+                        <div className="font-medium text-gray-900">{template.title}</div>
+                        <div className="text-sm text-gray-500">{template.description || 'No description'}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Position Details */}
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Position Title *
+                    </label>
+                    <input
+                      type="text"
+                      value={newPositionTitle}
+                      onChange={(e) => setNewPositionTitle(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#DC1125]"
+                      placeholder="Enter position title..."
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Position Description
+                    </label>
+                    <textarea
+                      value={newPositionDescription}
+                      onChange={(e) => setNewPositionDescription(e.target.value)}
+                      rows={3}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#DC1125]"
+                      placeholder="Brief description of this position..."
+                    />
+                  </div>
+                </div>
+
+                {createError && (
+                  <div className="bg-red-50 border border-red-200 rounded-md p-3">
+                    <span className="text-sm text-red-700">{createError}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
             <div className="flex justify-end space-x-3 p-6 border-t border-gray-200">
               <button
-                onClick={closeSendModal}
+                onClick={() => setShowCreateModal(false)}
                 className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50"
               >
                 Cancel
               </button>
               <button
-                onClick={handleSendInterview}
-                disabled={isSending}
+                onClick={submitCreatePosition}
+                disabled={isCreating || !newPositionTitle.trim()}
                 className="tempo-font inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-bold text-white bg-[#DC1125] hover:bg-[#052049] disabled:opacity-50"
               >
-                {isSending ? (
+                {isCreating ? (
                   <>
                     <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                    SENDING...
+                    CREATING...
+                  </>
+                ) : selectedTemplateId ? (
+                  <>
+                    <Plus className="h-4 w-4 mr-2" />
+                    CREATE FROM TEMPLATE
                   </>
                 ) : (
                   <>
-                    <Send className="h-4 w-4 mr-2" />
-                    SEND INVITATION
+                    <Plus className="h-4 w-4 mr-2" />
+                    CREATE CUSTOM POSITION
                   </>
                 )}
               </button>

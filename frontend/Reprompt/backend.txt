@@ -789,6 +789,8 @@ export class KeywordModel {
   }
 }
 
+
+//backend/src/models/Position.ts
 import { executeQuery } from '../config/snowflake';
 import { v4 as uuidv4 } from 'uuid';
 import { InterviewModel } from './Interview';
@@ -1579,12 +1581,14 @@ router.get('/test', (req: any, res: any) => {
   res.json({ message: 'Admin routes working!', user: req.user });
 });
 
+
 // Get all interview templates for the authenticated user
 router.get('/templates', async (req: any, res: any) => {
   try {
-    const userId = req.user?.id;
-    const templates = await InterviewModel.getTemplatesByUser(userId);
+    const userId = req.user?.id; // Add this fallback
+    console.log('Using userId:', userId); 
     
+    const templates = await InterviewModel.getTemplatesByUser(userId);
     res.json(templates);
   } catch (error) {
     console.error('Get templates error:', error);
@@ -2211,115 +2215,39 @@ router.get('/sessions/:sessionId/keyword-summary', async (req: any, res: any) =>
   }
 });
 
+// Add this debug route to admin.ts
+router.get('/debug-users', async (req: any, res: any) => {
+  try {
+    const templates = await executeQuery('SELECT DISTINCT created_by FROM interview_templates');
+    const users = await executeQuery('SELECT id, email FROM users LIMIT 10');
+    
+    res.json({
+      templateCreators: templates,
+      existingUsers: users
+    });
+  } catch (error) {
+    res.json({ error: error.message });
+  }
+});
+
+
 export default router;
 
 // backend/src/routes/auth.ts
 import express from 'express';
-import jwt from 'jsonwebtoken';
-import { UserModel } from '../models/User';
+
+console.log('🔥 AUTH ROUTES FILE LOADED');
 
 const router = express.Router();
 
-// Test route
 router.get('/test', (req: any, res: any) => {
+  console.log('AUTH TEST ROUTE HIT');
   res.json({ message: 'Auth routes working!' });
 });
 
-// Register new recruiter
-router.post('/register', async (req: any, res: any) => {
-  try {
-    const { email, password, first_name, last_name } = req.body;
-
-    if (!email || !password || !first_name || !last_name) {
-      return res.status(400).json({ error: 'All fields are required' });
-    }
-
-    // Check if user already exists
-    const existingUser = await UserModel.findByEmail(email);
-    if (existingUser) {
-      return res.status(400).json({ error: 'User already exists' });
-    }
-
-    // Create new user
-    const user = await UserModel.create({
-      email,
-      password,
-      first_name,
-      last_name,
-      role: 'recruiter'
-    });
-
-    // Generate JWT token
-    const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role },
-      process.env.JWT_SECRET!,
-      { expiresIn: '24h' }
-    );
-
-    res.status(201).json({
-      message: 'User created successfully',
-      token,
-      user: {
-        id: user.id,
-        email: user.email,
-        first_name: user.first_name,
-        last_name: user.last_name,
-        role: user.role
-      }
-    });
-  } catch (error) {
-    console.error('Registration error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Login
-router.post('/login', async (req: any, res: any) => {
-  try {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
-    }
-
-    // Find user
-    const user = await UserModel.findByEmail(email);
-    console.log('Found user:', user); // Add this line
-    if (!user) {
-      return res.status(400).json({ error: 'Invalid credentials' });
-    }
-
-    // Validate password
-    const isValidPassword = await UserModel.validatePassword(user, password);
-    if (!isValidPassword) {
-      return res.status(400).json({ error: 'Invalid credentials' });
-    }
-
-    // Update last login
-    await UserModel.updateLastLogin(user.id);
-
-    // Generate JWT token
-    const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role },
-      process.env.JWT_SECRET!,
-      { expiresIn: '24h' }
-    );
-
-    res.json({
-      message: 'Login successful',
-      token,
-      user: {
-        id: user.id,
-        email: user.email,
-        first_name: user.first_name,
-        last_name: user.last_name,
-        role: user.role
-      }
-    });
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
+router.post('/test', (req: any, res: any) => {
+  console.log('POST TEST ROUTE HIT:', req.body);
+  res.json({ message: 'POST test works' });
 });
 
 export default router;
@@ -2449,303 +2377,98 @@ router.post('/session/:sessionId/complete', async (req: any, res: any) => {
 
 export default router;
 
+// backend/src/routes/positions.ts - Simplified version to isolate the error
 import express from 'express';
-import { PositionModel } from '../models/Position';
-import { InterviewModel } from '../models/Interview';
-import { EmailService } from '../services/emailService';
 
 const router = express.Router();
 
 // Test route
 router.get('/test', (req: any, res: any) => {
+  console.log('Position test route hit');
   res.json({ message: 'Position routes working!', user: req.user });
 });
 
-// Get all positions for the authenticated user
-router.get('/', async (req: any, res: any) => {
+// Basic routes to test
+router.get('/', (req: any, res: any) => {
+  console.log('Get positions route hit');
+  res.json({ message: 'Get positions - simplified', positions: [] });
+});
+
+router.post('/', (req: any, res: any) => {
+  console.log('Create position route hit');
+  res.json({ message: 'Create position - simplified' });
+});
+
+
+console.log('Position routes loaded successfully');
+
+export default router;
+
+// backend/src/routes/upload.ts
+import express from 'express';
+import multer from 'multer';
+import { v4 as uuidv4 } from 'uuid';
+import path from 'path';
+import fs from 'fs';
+
+const router = express.Router();
+
+// Configure multer for video uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadPath = process.env.UPLOAD_PATH || './uploads';
+    if (!fs.existsSync(uploadPath)) {
+      fs.mkdirSync(uploadPath, { recursive: true });
+    }
+    cb(null, uploadPath);
+  },
+  filename: (req, file, cb) => {
+    const uniqueName = `${uuidv4()}-${Date.now()}${path.extname(file.originalname)}`;
+    cb(null, uniqueName);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    // Accept video files
+    if (file.mimetype.startsWith('video/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only video files are allowed'));
+    }
+  }
+});
+
+// Upload video response
+router.post('/video', upload.single('video'), async (req: any, res: any) => {
   try {
-    const userId = req.user?.id;
-    const positions = await PositionModel.getPositionsByUser(userId);
+    if (!req.file) {
+      return res.status(400).json({ error: 'No video file provided' });
+    }
+
+    const { sessionId, questionId } = req.body;
+
+    if (!sessionId || !questionId) {
+      return res.status(400).json({ error: 'Session ID and Question ID are required' });
+    }
+
+    // TODO: Upload to Snowflake stage
+    // TODO: Save video metadata to database
     
-    res.json(positions);
-  } catch (error) {
-    console.error('Get positions error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Create new position from template
-router.post('/', async (req: any, res: any) => {
-  try {
-    const { title, description, template_id } = req.body;
-    const userId = req.user?.id;
-
-    if (!title || !template_id) {
-      return res.status(400).json({ error: 'Title and template ID are required' });
-    }
-
-    // Verify template exists
-    const template = await InterviewModel.getTemplateById(template_id);
-    if (!template) {
-      return res.status(404).json({ error: 'Template not found' });
-    }
-
-    // Create position from template
-    const position = await PositionModel.createFromTemplate({
-      title,
-      description: description || '',
-      template_id,
-      created_by: userId
-    });
-
-    res.status(201).json({
-      message: 'Position created successfully',
-      position
-    });
-
-  } catch (error) {
-    console.error('Create position error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Get specific position with questions and keywords
-router.get('/:positionId', async (req: any, res: any) => {
-  try {
-    const { positionId } = req.params;
-    
-    const positionDetail = await PositionModel.getPositionDetail(positionId);
-    if (!positionDetail) {
-      return res.status(404).json({ error: 'Position not found' });
-    }
-
-    res.json(positionDetail);
-  } catch (error) {
-    console.error('Get position detail error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Update position basic info
-router.put('/:positionId', async (req: any, res: any) => {
-  try {
-    const { positionId } = req.params;
-    const { title, description, questions, keywords } = req.body;
-
-    // Update basic position info
-    if (title !== undefined || description !== undefined) {
-      await PositionModel.updatePosition(positionId, { title, description });
-    }
-
-    // Update questions if provided
-    if (questions && Array.isArray(questions)) {
-      const validQuestions = questions.filter(q => q.text && q.text.trim() !== '');
-      if (validQuestions.length === 0) {
-        return res.status(400).json({ error: 'At least one question is required' });
-      }
-      
-      await PositionModel.updatePositionQuestions(positionId, validQuestions);
-    }
-
-    // Update keywords if provided
-    if (keywords && Array.isArray(keywords)) {
-      await PositionModel.updatePositionKeywords(positionId, keywords);
-    }
-
-    res.json({ message: 'Position updated successfully' });
-  } catch (error) {
-    console.error('Update position error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Get position questions
-router.get('/:positionId/questions', async (req: any, res: any) => {
-  try {
-    const { positionId } = req.params;
-    
-    const questions = await PositionModel.getPositionQuestions(positionId);
-    
-    res.json({ questions });
-  } catch (error) {
-    console.error('Get position questions error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Update position questions only
-router.put('/:positionId/questions', async (req: any, res: any) => {
-  try {
-    const { positionId } = req.params;
-    const { questions } = req.body;
-
-    if (!questions || !Array.isArray(questions)) {
-      return res.status(400).json({ error: 'Questions array is required' });
-    }
-
-    const validQuestions = questions.filter(q => q.text && q.text.trim() !== '');
-    if (validQuestions.length === 0) {
-      return res.status(400).json({ error: 'At least one question is required' });
-    }
-
-    const updatedQuestions = await PositionModel.updatePositionQuestions(positionId, validQuestions);
-
     res.json({
-      message: 'Position questions updated successfully',
-      questions: updatedQuestions
-    });
-  } catch (error) {
-    console.error('Update position questions error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Get position keywords
-router.get('/:positionId/keywords', async (req: any, res: any) => {
-  try {
-    const { positionId } = req.params;
-    
-    const keywords = await PositionModel.getPositionKeywords(positionId);
-    
-    res.json({ 
-      keywords,
-      total: keywords.length
-    });
-  } catch (error) {
-    console.error('Get position keywords error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Update position keywords only
-router.put('/:positionId/keywords', async (req: any, res: any) => {
-  try {
-    const { positionId } = req.params;
-    const { keywords } = req.body;
-
-    if (!keywords || !Array.isArray(keywords)) {
-      return res.status(400).json({ error: 'Keywords array is required' });
-    }
-
-    // Validate keywords
-    for (const keyword of keywords) {
-      if (!keyword.keyword || typeof keyword.keyword !== 'string') {
-        return res.status(400).json({ error: 'Each keyword must have a text value' });
-      }
-      if (!keyword.category) {
-        keyword.category = 'general';
-      }
-      if (!keyword.weight) {
-        keyword.weight = 1.0;
-      }
-    }
-
-    const updatedKeywords = await PositionModel.updatePositionKeywords(positionId, keywords);
-
-    res.json({
-      message: 'Position keywords updated successfully',
-      keywords: updatedKeywords,
-      total: updatedKeywords.length
+      message: 'Video uploaded successfully',
+      fileId: req.file.filename,
+      size: req.file.size,
+      mimetype: req.file.mimetype
     });
 
   } catch (error) {
-    console.error('Update position keywords error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Create interview session from position (send to candidate)
-router.post('/:positionId/sessions', async (req: any, res: any) => {
-  try {
-    const { positionId } = req.params;
-    const { candidateEmail, candidateName } = req.body;
-
-    console.log('=== POSITION SESSION EMAIL DEBUG ===');
-    console.log('Position ID:', positionId);
-    console.log('Target Email:', candidateEmail);
-
-    if (!candidateEmail || !candidateName) {
-      return res.status(400).json({ error: 'Candidate email and name are required' });
-    }
-
-    // Get position details
-    const position = await PositionModel.getPositionById(positionId);
-    if (!position) {
-      return res.status(404).json({ error: 'Position not found' });
-    }
-
-    // Create session linked to position
-    const session = await InterviewModel.createSession({
-      template_id: position.template_id, // Keep template_id for backward compatibility
-      candidate_email: candidateEmail,
-      candidate_name: candidateName
-    });
-
-    // Update session with position_id
-    await PositionModel.linkSessionToPosition(session.id, positionId);
-
-    const interviewLink = `${process.env.FRONTEND_URL}/interview/${session.id}`;
-
-    // Send email with position title
-    const emailSent = await EmailService.sendInterviewInvitation({
-      to: candidateEmail,
-      candidateName: candidateName,
-      interviewTitle: position.title,
-      interviewLink: interviewLink,
-      expiresAt: session.expires_at,
-      recruiterName: `${req.user?.first_name} ${req.user?.last_name}`
-    });
-
-    console.log('Position session email sent result:', emailSent);
-    
-    res.status(201).json({
-      message: 'Interview session created successfully',
-      session,
-      position,
-      interviewLink,
-      emailSent: emailSent
-    });
-
-  } catch (error) {
-    console.error('Create position session error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Get sessions for a specific position
-router.get('/:positionId/sessions', async (req: any, res: any) => {
-  try {
-    const { positionId } = req.params;
-    
-    const sessions = await PositionModel.getPositionSessions(positionId);
-    
-    res.json({ sessions });
-  } catch (error) {
-    console.error('Get position sessions error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Delete position
-router.delete('/:positionId', async (req: any, res: any) => {
-  try {
-    const { positionId } = req.params;
-    
-    // Check if position has any active sessions
-    const sessions = await PositionModel.getPositionSessions(positionId);
-    if (sessions.length > 0) {
-      return res.status(400).json({ 
-        error: 'Cannot delete position with existing candidate sessions',
-        sessionsCount: sessions.length
-      });
-    }
-
-    await PositionModel.deletePosition(positionId);
-    
-    res.json({ message: 'Position deleted successfully' });
-  } catch (error) {
-    console.error('Delete position error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('Video upload error:', error);
+    res.status(500).json({ error: 'Upload failed' });
   }
 });
 
@@ -3623,24 +3346,98 @@ export class SpeechToTextService {
   }
 }
 
+// backend/src/utils/tempFileCleanup.ts
+import fs from 'fs';
+import path from 'path';
+
+export class TempFileManager {
+  private static tempDirs = ['./temp_downloads', './temp_audio', './uploads'];
+  
+  // Clean up files older than specified minutes
+  static cleanupOldFiles(maxAgeMinutes: number = 30): void {
+    const maxAgeMs = maxAgeMinutes * 60 * 1000;
+    const now = Date.now();
+    
+    this.tempDirs.forEach(dirPath => {
+      if (!fs.existsSync(dirPath)) return;
+      
+      try {
+        const files = fs.readdirSync(dirPath);
+        let deletedCount = 0;
+        
+        files.forEach(file => {
+          const filePath = path.join(dirPath, file);
+          try {
+            const stats = fs.statSync(filePath);
+            const fileAge = now - stats.mtime.getTime();
+            
+            if (fileAge > maxAgeMs) {
+              fs.unlinkSync(filePath);
+              deletedCount++;
+              console.log(`🗑️ Deleted old temp file: ${filePath}`);
+            }
+          } catch (error) {
+            console.error(`Error processing file ${filePath}:`, error);
+          }
+        });
+        
+        if (deletedCount > 0) {
+          console.log(`✅ Cleaned up ${deletedCount} old files from ${dirPath}`);
+        }
+      } catch (error) {
+        console.error(`Error cleaning directory ${dirPath}:`, error);
+      }
+    });
+  }
+  
+  // Force delete specific files with retry
+  static async forceDeleteFile(filePath: string, maxRetries: number = 3): Promise<boolean> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+          console.log(`🗑️ Successfully deleted: ${filePath}`);
+          return true;
+        }
+        return true; // File doesn't exist, consider it "deleted"
+      } catch (error) {
+        console.error(`Attempt ${attempt} failed to delete ${filePath}:`, error);
+        if (attempt < maxRetries) {
+          // Wait a bit before retrying
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+    }
+    console.error(`❌ Failed to delete ${filePath} after ${maxRetries} attempts`);
+    return false;
+  }
+  
+  // Schedule periodic cleanup
+  static startPeriodicCleanup(intervalMinutes: number = 15): NodeJS.Timeout {
+    console.log(`🕒 Starting periodic temp file cleanup every ${intervalMinutes} minutes`);
+    
+    // Run cleanup immediately
+    this.cleanupOldFiles();
+    
+    // Schedule regular cleanup
+    return setInterval(() => {
+      console.log('🧹 Running scheduled temp file cleanup...');
+      this.cleanupOldFiles();
+    }, intervalMinutes * 60 * 1000);
+  }
+}
+
 // backend/src/app.ts
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
-
-// Import routes
 import authRoutes from './routes/auth';
 import interviewRoutes from './routes/interviews';
 import adminRoutes from './routes/admin';
 import uploadRoutes from './routes/upload';
-import videoRoutes from './routes/video'; 
-import { R2Service } from './services/r2Service';
-
-// Import middleware
-import { authMiddleware } from './middleware/auth';
+import videoRoutes from './routes/video';
 import positionRoutes from './routes/positions';
-
-dotenv.config();
+import { authMiddleware } from './middleware/auth';
+import jwt from 'jsonwebtoken';
 
 const app = express();
 
@@ -3653,43 +3450,75 @@ app.get('/health', (req, res) => {
   res.json({ status: 'healthy', message: 'Server is working!' });
 });
 
+// Test login route with correct user ID
+app.post('/api/auth/test', (req: any, res: any) => {
+  console.log('DIRECT ROUTE WORKED:', req.body);
+  
+  const { email, password } = req.body;
+  
+  if (email === 'test@company.com' && password === 'password123') {
+    const mockUser = {
+      id: 'ced6e104-7739-4711-b9ef-dd98008dc31a', // Updated to use real database user ID
+      email: 'test@company.com',
+      first_name: 'Test',
+      last_name: 'User',
+      role: 'recruiter'
+    };
+    
+    const token = jwt.sign(
+      { id: mockUser.id, email: mockUser.email, role: mockUser.role },
+      process.env.JWT_SECRET || 'your-secret-key',
+      { expiresIn: '24h' }
+    );
+    
+    return res.json({
+      message: 'Login successful',
+      token: token,
+      user: mockUser
+    });
+  }
+  
+  return res.status(400).json({ error: 'Invalid credentials' });
+});
+
 // Public routes
 app.use('/api/auth', authRoutes);
 app.use('/api/interviews', interviewRoutes);
 app.use('/api/upload', uploadRoutes);
-app.use('/api/video', videoRoutes); // Add this line
+app.use('/api/video', videoRoutes);
 
 // Protected routes (require authentication)
 app.use('/api/admin', authMiddleware, adminRoutes);
 app.use('/api/admin/positions', authMiddleware, positionRoutes);
 
-
 export default app;
 
-// backend/src/server.ts
 import dotenv from 'dotenv';
 dotenv.config();
 
-import app from './app';
+import app from './app';  // Keep this
+// Remove these lines:
+// import express from 'express';
+// import cors from 'cors';
+// const app = express();
+// app.use(cors());
+// app.use(express.json());
+
+// Remove the local route too since it's now in app.ts
+// app.post('/api/auth/test', ...)
+
 import { connectToSnowflake } from './config/snowflake';
-import { TempFileManager } from './utils/tempFileCleanup'; // 👈 ADD THIS IMPORT
+import { TempFileManager } from './utils/tempFileCleanup';
 
 const PORT = process.env.PORT || 5000;
 
-// Connect to Snowflake first, then start server
 const startServer = async () => {
   try {
     await connectToSnowflake();
-    
-    // 👇 ADD THIS SECTION HERE 👇
-    // Start periodic temp file cleanup
-    TempFileManager.startPeriodicCleanup(15); // Every 15 minutes
+    TempFileManager.startPeriodicCleanup(15);
     
     app.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-      console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`🔗 Health check: http://localhost:${PORT}/health`);
-      console.log(`🧹 Temp file cleanup running every 15 minutes`); // 👈 ADD THIS LOG
+      console.log(`Server running on port ${PORT}`);
     });
   } catch (error) {
     console.error('Failed to start server:', error);
@@ -3698,37 +3527,6 @@ const startServer = async () => {
 };
 
 startServer();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
