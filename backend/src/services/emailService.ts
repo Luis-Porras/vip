@@ -1,7 +1,5 @@
 //backend/src/services/emailService.ts
-import sgMail from '@sendgrid/mail';
-
-sgMail.setApiKey(process.env.SENDGRID_API_KEY!);
+import nodemailer from 'nodemailer';
 
 export interface EmailData {
   to: string;
@@ -12,9 +10,40 @@ export interface EmailData {
   recruiterName?: string;
 }
 
+// Create Gmail transporter
+const createTransporter = () => {
+  if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
+    console.warn('Gmail credentials not configured. Emails will be logged only.');
+    return null;
+  }
+
+  return nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.GMAIL_USER,
+      pass: process.env.GMAIL_APP_PASSWORD,
+    },
+  });
+};
+
 export class EmailService {
   static async sendInterviewInvitation(emailData: EmailData): Promise<boolean> {
     try {
+      const transporter = createTransporter();
+      
+      // If no transporter (missing credentials), just log and return true for development
+      if (!transporter) {
+        console.log('\n=== EMAIL WOULD BE SENT ===');
+        console.log('To:', emailData.to);
+        console.log('Candidate:', emailData.candidateName);
+        console.log('Position:', emailData.interviewTitle);
+        console.log('Interview Link:', emailData.interviewLink);
+        console.log('Expires:', new Date(emailData.expiresAt).toLocaleDateString());
+        console.log('Recruiter:', emailData.recruiterName);
+        console.log('==========================\n');
+        return true;
+      }
+
       const expiryDate = new Date(emailData.expiresAt).toLocaleDateString('en-US', {
         weekday: 'long',
         year: 'numeric',
@@ -25,11 +54,11 @@ export class EmailService {
       });
 
       const emailContent = {
-        to: emailData.to,
         from: {
-          email: process.env.FROM_EMAIL!,
-          name: process.env.FROM_NAME!
+          name: process.env.FROM_NAME || 'Carnival VIP Recruitment',
+          address: process.env.GMAIL_USER!
         },
+        to: emailData.to,
         subject: `Video Interview Invitation - ${emailData.interviewTitle}`,
         html: `
           <!DOCTYPE html>
@@ -41,17 +70,18 @@ export class EmailService {
           </head>
           <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
             
-            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+            <div style="background: linear-gradient(135deg, #052049 0%, #DC1125 100%); color: white; padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
               <h1 style="margin: 0; font-size: 28px; font-weight: 300;">Video Interview Invitation</h1>
+              <p style="margin: 10px 0 0 0; font-size: 16px; opacity: 0.9;">Carnival Cruise Line VIP Recruitment</p>
             </div>
             
             <div style="background: #ffffff; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
               <p style="font-size: 18px; margin-bottom: 20px;">Hi <strong>${emailData.candidateName}</strong>,</p>
               
-              <p style="margin-bottom: 20px;">You've been invited to complete a video interview for the <strong>${emailData.interviewTitle}</strong> position.</p>
+              <p style="margin-bottom: 20px;">You've been invited to complete a video interview for the <strong>${emailData.interviewTitle}</strong> position with Carnival Cruise Line.</p>
               
-              <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #667eea;">
-                <h3 style="margin: 0 0 15px 0; color: #667eea;">Interview Details</h3>
+              <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 25px 0; border-left: 4px solid #052049;">
+                <h3 style="margin: 0 0 15px 0; color: #052049;">Interview Details</h3>
                 <ul style="margin: 0; padding-left: 20px;">
                   <li style="margin-bottom: 8px;"><strong>Position:</strong> ${emailData.interviewTitle}</li>
                   <li style="margin-bottom: 8px;"><strong>Format:</strong> Video interview with recorded responses</li>
@@ -65,13 +95,13 @@ export class EmailService {
                   <li style="margin-bottom: 8px;">Ensure you have a stable internet connection</li>
                   <li style="margin-bottom: 8px;">Find a quiet, well-lit space</li>
                   <li style="margin-bottom: 8px;">Allow camera and microphone access when prompted</li>
-                  <li style="margin-bottom: 8px;">You can only record each answer once, so prepare thoughtfully</li>
+                  <li style="margin-bottom: 8px;">You can re-record each answer once if needed</li>
                 </ul>
               </div>
               
               <div style="text-align: center; margin: 30px 0;">
                 <a href="${emailData.interviewLink}" 
-                   style="display: inline-block; background: #667eea; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px; box-shadow: 0 3px 6px rgba(102, 126, 234, 0.3);">
+                   style="display: inline-block; background: linear-gradient(135deg, #052049 0%, #DC1125 100%); color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px; box-shadow: 0 3px 6px rgba(220, 17, 37, 0.3);">
                   Start Your Interview
                 </a>
               </div>
@@ -92,7 +122,7 @@ export class EmailService {
         text: `
 Hi ${emailData.candidateName},
 
-You've been invited to complete a video interview for the ${emailData.interviewTitle} position.
+You've been invited to complete a video interview for the ${emailData.interviewTitle} position with Carnival Cruise Line.
 
 Interview Details:
 - Position: ${emailData.interviewTitle}
@@ -103,7 +133,7 @@ Before you begin:
 - Ensure you have a stable internet connection
 - Find a quiet, well-lit space
 - Allow camera and microphone access when prompted
-- You can only record each answer once, so prepare thoughtfully
+- You can re-record each answer once if needed
 
 Start your interview: ${emailData.interviewLink}
 
@@ -114,12 +144,20 @@ ${emailData.recruiterName || process.env.FROM_NAME}
         `
       };
 
-      await sgMail.send(emailContent);
+      await transporter.sendMail(emailContent);
       console.log('Interview invitation email sent successfully to:', emailData.to);
       return true;
 
     } catch (error) {
       console.error('Failed to send interview invitation email:', error);
+      
+      // Log the details for debugging but still return the interview link
+      console.log('\n=== EMAIL FAILED - MANUAL LINK ===');
+      console.log('To:', emailData.to);
+      console.log('Interview Link:', emailData.interviewLink);
+      console.log('Error:', error);
+      console.log('=================================\n');
+      
       return false;
     }
   }

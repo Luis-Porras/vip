@@ -1,4 +1,4 @@
-// frontend/src/components/VideoReviewInterface.tsz
+// frontend/src/components/VideoReviewInterface.tsx
 
 "use client"
 import React, { useState, useEffect, useRef } from 'react';

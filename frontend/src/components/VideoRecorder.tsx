@@ -1,3 +1,4 @@
+//frontend/src/components/VideoRecorder.tsx
 "use client"
 import React, { useState, useRef, useEffect } from 'react';
 import { Play, Square, AlertCircle, CheckCircle, Camera, Mic } from 'lucide-react';

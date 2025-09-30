@@ -377,62 +377,71 @@ export default function Dashboard() {
     setSendSuccess('');
   };
 
-  const handleSendInterview = async () => {
-    if (!selectedTemplate) return;
+const handleSendInterview = async () => {
+  if (!selectedTemplate) return;
 
-    setSendError('');
-    setSendSuccess('');
+  setSendError('');
+  setSendSuccess('');
 
-    if (!candidateEmail.trim() || !candidateName.trim()) {
-      setSendError('Please enter both candidate name and email');
-      return;
-    }
+  if (!candidateEmail.trim() || !candidateName.trim()) {
+    setSendError('Please enter both candidate name and email');
+    return;
+  }
 
-    setIsSending(true);
+  setIsSending(true);
 
-    try {
-      const token = localStorage.getItem('authToken');
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/admin/templates/${selectedTemplate.id}/sessions`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            candidateEmail: candidateEmail.trim(),
-            candidateName: candidateName.trim(),
-          }),
-        }
-      );
-
-      const data = await response.json();
-
-      if (response.ok) {
-        const emailStatus = data.emailSent ? 
-          'Interview invitation sent successfully via email!' : 
-          'Session created but email failed to send. Please send the link manually.';
-      
-        setSendSuccess(`${emailStatus}\n\nInterview Link: ${data.interviewLink}`);
-
-        setCandidateEmail('');
-        setCandidateName('');
-        
-        setTimeout(() => {
-          setShowSendModal(false);
-          setSendSuccess('');
-          selectTemplate(selectedTemplate.id);
-        }, 3000);
-      } else {
-        setSendError(data.error || 'Failed to send interview');
+  try {
+    const token = localStorage.getItem('authToken');
+    const response = await fetch(
+      `${process.env.NEXT_PUBLIC_API_URL}/api/admin/templates/${selectedTemplate.id}/sessions`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          candidateEmail: candidateEmail.trim(),
+          candidateName: candidateName.trim(),
+        }),
       }
-    } catch (error) {
-      setSendError(`Network error: ${error instanceof Error ? error.message : 'Please try again.'}`);
-    } finally {
-      setIsSending(false);
+    );
+
+    const data = await response.json();
+
+    if (response.ok) {
+      let successMessage = '';
+      
+      if (data.emailSent) {
+        successMessage = `✅ Interview invitation sent successfully via Gmail!\n\nThe candidate should receive the email shortly.`;
+      } else {
+        successMessage = `⚠️ Session created but email failed to send.\n\nPlease copy and send this link manually:\n${data.interviewLink}`;
+      }
+      
+      // Add interview link for reference
+      successMessage += `\n\n📎 Interview Link: ${data.interviewLink}`;
+      
+      setSendSuccess(successMessage);
+
+      setCandidateEmail('');
+      setCandidateName('');
+      
+      setTimeout(() => {
+        setShowSendModal(false);
+        setSendSuccess('');
+        selectTemplate(selectedTemplate.id); // Refresh template data
+      }, 5000); // Longer timeout to read the message
+      
+    } else {
+      setSendError(data.error || 'Failed to send interview');
     }
-  };
+  } catch (error) {
+    setSendError(`Network error: ${error instanceof Error ? error.message : 'Please try again.'}`);
+  } finally {
+    setIsSending(false);
+  }
+};
+
 
   const closeSendModal = () => {
     setShowSendModal(false);

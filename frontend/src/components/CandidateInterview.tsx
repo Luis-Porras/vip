@@ -1,3 +1,4 @@
+//frontend/src/components/CandidateInterview.tsx
 "use client"
 import React, { useState, useEffect } from 'react';
 import { Clock, CheckCircle, AlertCircle, Play, Ship, Anchor } from 'lucide-react';

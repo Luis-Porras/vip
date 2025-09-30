@@ -123,13 +123,17 @@ router.put('/templates/:templateId', async (req: any, res: any) => {
 
 
 // Create interview session (send to candidate)
+// Update this section in backend/src/routes/admin.ts
+
+// Create interview session (send to candidate)
 router.post('/templates/:templateId/sessions', async (req: any, res: any) => {
   try {
     const { templateId } = req.params;
     const { candidateEmail, candidateName } = req.body;
 
     console.log('=== EMAIL DEBUG ===');
-    console.log('SendGrid API Key exists:', !!process.env.SENDGRID_API_KEY);
+    console.log('Gmail User exists:', !!process.env.GMAIL_USER);
+    console.log('Gmail Password exists:', !!process.env.GMAIL_APP_PASSWORD);
     console.log('From Email:', process.env.FROM_EMAIL);
     console.log('From Name:', process.env.FROM_NAME);
     console.log('Target Email:', candidateEmail);
@@ -152,9 +156,9 @@ router.post('/templates/:templateId/sessions', async (req: any, res: any) => {
 
     const interviewLink = `${process.env.FRONTEND_URL}/interview/${session.id}`;
 
-    console.log('About to send email...');
+    console.log('About to send email with Gmail...');
     
-    // Send email
+    // Send email using Gmail
     const emailSent = await EmailService.sendInterviewInvitation({
       to: candidateEmail,
       candidateName: candidateName,
@@ -170,7 +174,9 @@ router.post('/templates/:templateId/sessions', async (req: any, res: any) => {
       message: 'Interview session created successfully',
       session,
       interviewLink,
-      emailSent: emailSent
+      emailSent: emailSent,
+      // Always include the link for manual sharing if email fails
+      manualLink: emailSent ? null : `Copy this link to send manually: ${interviewLink}`
     });
 
   } catch (error) {

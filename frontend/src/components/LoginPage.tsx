@@ -1,4 +1,4 @@
-// Replace your LoginPage.tsx component with this enhanced version:
+//frontend/src/components/LoginPage.tsx
 
 "use client"
 import React, { useState } from 'react';
@@ -12,14 +12,14 @@ export default function LoginPage() {
   const [error, setError] = useState('');
 
   const handleLogin = async (e: React.FormEvent) => {
-    console.log('handleLogin called! ');
+    console.log('About to make fetch request');
     e.preventDefault();
     setIsLoading(true);
     setError('');
 
     try {
       console.log('About to fetch login...');
-      const response = await fetch(`http://localhost:5000/api/auth/test`, {
+      const response = await fetch('http://localhost:5000/api/auth/test', {
         method: 'POST',
          mode: 'cors', // Add this
         headers: {

@@ -59,6 +59,7 @@ export default function PositionsPage() {
   return <PositionDashboard />;
 }
 
+
 //frontend/src/app/review/[sessionId]/page.tsx
 import VideoReviewInterface from '@/components/VideoReviewInterface';
 
@@ -77,49 +78,6 @@ import VideoReviewDashboard from '@/components/VideoReviewDashboard';
 
 export default function ReviewPage() {
   return <VideoReviewDashboard />;
-}
-
-/*frontend/src/app/globals.css*/
-@import "tailwindcss";
-
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
-}
-
-
-@font-face {
-  font-family: 'Tempo Std Heavy Condensed';
-  src: url('/fonts/TempoStd-HeavyCondensed.otf') format('opentype');
-  font-weight: 800;
-  font-style: normal;
-  font-display: swap;
-}
-
-.tempo-font {
-  font-family: 'Tempo Std Heavy Condensed', 'Arial Black', sans-serif;
-  font-weight: 800;
-  letter-spacing: -0.025em;
 }
 
 //frontend/src/app/layout.tsx
@@ -1187,7 +1145,6 @@ export default function CandidatesDashboard() {
     </div>
   );
 }
-
 // frontend/src/components/CreatePosition.tsx
 "use client"
 import React, { useState, useEffect } from 'react';
@@ -1819,7 +1776,7 @@ export default function CreatePosition() {
   );
 }
 
-
+//frontend/src/components/CreateTemplate.tsx
 "use client"
 import React, { useState } from 'react';
 import { ArrowLeft, Plus, Trash2, Clock, Save, AlertCircle, Tag, Star } from 'lucide-react';
@@ -2728,62 +2685,71 @@ export default function Dashboard() {
     setSendSuccess('');
   };
 
-  const handleSendInterview = async () => {
-    if (!selectedTemplate) return;
+const handleSendInterview = async () => {
+  if (!selectedTemplate) return;
 
-    setSendError('');
-    setSendSuccess('');
+  setSendError('');
+  setSendSuccess('');
 
-    if (!candidateEmail.trim() || !candidateName.trim()) {
-      setSendError('Please enter both candidate name and email');
-      return;
-    }
+  if (!candidateEmail.trim() || !candidateName.trim()) {
+    setSendError('Please enter both candidate name and email');
+    return;
+  }
 
-    setIsSending(true);
+  setIsSending(true);
 
-    try {
-      const token = localStorage.getItem('authToken');
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/admin/templates/${selectedTemplate.id}/sessions`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            candidateEmail: candidateEmail.trim(),
-            candidateName: candidateName.trim(),
-          }),
-        }
-      );
-
-      const data = await response.json();
-
-      if (response.ok) {
-        const emailStatus = data.emailSent ? 
-          'Interview invitation sent successfully via email!' : 
-          'Session created but email failed to send. Please send the link manually.';
-      
-        setSendSuccess(`${emailStatus}\n\nInterview Link: ${data.interviewLink}`);
-
-        setCandidateEmail('');
-        setCandidateName('');
-        
-        setTimeout(() => {
-          setShowSendModal(false);
-          setSendSuccess('');
-          selectTemplate(selectedTemplate.id);
-        }, 3000);
-      } else {
-        setSendError(data.error || 'Failed to send interview');
+  try {
+    const token = localStorage.getItem('authToken');
+    const response = await fetch(
+      `${process.env.NEXT_PUBLIC_API_URL}/api/admin/templates/${selectedTemplate.id}/sessions`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          candidateEmail: candidateEmail.trim(),
+          candidateName: candidateName.trim(),
+        }),
       }
-    } catch (error) {
-      setSendError(`Network error: ${error instanceof Error ? error.message : 'Please try again.'}`);
-    } finally {
-      setIsSending(false);
+    );
+
+    const data = await response.json();
+
+    if (response.ok) {
+      let successMessage = '';
+      
+      if (data.emailSent) {
+        successMessage = `✅ Interview invitation sent successfully via Gmail!\n\nThe candidate should receive the email shortly.`;
+      } else {
+        successMessage = `⚠️ Session created but email failed to send.\n\nPlease copy and send this link manually:\n${data.interviewLink}`;
+      }
+      
+      // Add interview link for reference
+      successMessage += `\n\n📎 Interview Link: ${data.interviewLink}`;
+      
+      setSendSuccess(successMessage);
+
+      setCandidateEmail('');
+      setCandidateName('');
+      
+      setTimeout(() => {
+        setShowSendModal(false);
+        setSendSuccess('');
+        selectTemplate(selectedTemplate.id); // Refresh template data
+      }, 5000); // Longer timeout to read the message
+      
+    } else {
+      setSendError(data.error || 'Failed to send interview');
     }
-  };
+  } catch (error) {
+    setSendError(`Network error: ${error instanceof Error ? error.message : 'Please try again.'}`);
+  } finally {
+    setIsSending(false);
+  }
+};
+
 
   const closeSendModal = () => {
     setShowSendModal(false);
@@ -4985,6 +4951,7 @@ export default function EditPosition({ positionId }: { positionId: string }) {
   );
 }
 
+//frontend/src/components/EditTemplate.tsx
 "use client"
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Plus, Trash2, Clock, Save, AlertCircle, Tag, Star } from 'lucide-react';
@@ -5591,7 +5558,7 @@ export default function EditTemplate({ templateId }: { templateId: string }) {
   );
 }
 
-// Replace your LoginPage.tsx component with this enhanced version:
+//frontend/src/components/LoginPage.tsx
 
 "use client"
 import React, { useState } from 'react';
@@ -5812,6 +5779,7 @@ export default function LoginPage() {
   );
 }
 
+//frontend/src/components/PositionDashboard.tsx
 "use client"
 import React, { useState, useEffect } from 'react';
 import UnifiedHeader from './UnifiedHeader';
@@ -6670,6 +6638,7 @@ export default function UnifiedHeader({ currentPage, user }: UnifiedHeaderProps)
   );
 }
 
+//frontend/src/components/VideoRecorder.tsx
 "use client"
 import React, { useState, useRef, useEffect } from 'react';
 import { Play, Square, AlertCircle, CheckCircle, Camera, Mic } from 'lucide-react';
@@ -7099,6 +7068,7 @@ export default function VideoRecorder({
   );
 }
 
+//frontend/src/components/VideoReviewDashboard.tsx
 "use client"
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Play, Eye, Calendar, Clock, User, Mail, CheckCircle, AlertCircle, Filter, X, Search, ArrowUpDown, ChevronUp, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
@@ -7674,7 +7644,7 @@ export default function VideoReviewDashboard() {
   );
 }
 
-// frontend/src/components/VideoReviewInterface.tsz
+// frontend/src/components/VideoReviewInterface.tsx
 
 "use client"
 import React, { useState, useEffect, useRef } from 'react';
@@ -8536,6 +8506,13 @@ export default function VideoReviewInterface({ sessionId }: { sessionId: string 
     </div>
   );
 };
+
+
+
+
+
+
+
 
 
 
